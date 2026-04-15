@@ -48,7 +48,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: docker/php
-          platforms: linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             115900265633.dkr.ecr.eu-west-2.amazonaws.com/reckless/php:${{ matrix.php }}
