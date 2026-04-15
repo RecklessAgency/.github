@@ -163,8 +163,8 @@ jobs:
             --network-mode awsvpc \
             --requires-compatibilities FARGATE \
             --runtime-platform "operatingSystemFamily=LINUX,cpuArchitecture=ARM64" \
-            --cpu 256 \
-            --memory 512 \
+            --cpu 1024 \
+            --memory 2048 \
             --execution-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-execution" \
             --task-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-task" \
             --container-definitions "[{
