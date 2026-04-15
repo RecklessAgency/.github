@@ -2,11 +2,6 @@ name: Preview Deploy
 
 on:
   workflow_call:
-    inputs:
-      stack:
-        required: true
-        type: string
-        description: "laravel or wordpress"
 
 jobs:
   deploy:
@@ -26,12 +21,20 @@ jobs:
         run: |
           echo "php=$(jq -r .php .claude/project.json)" >> $GITHUB_OUTPUT
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
           echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "ecr_role_arn=$(jq -r .preview.aws.ecr_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "instance_role_arn=$(jq -r .preview.aws.instance_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "cf_account_id=$(jq -r .preview.cloudflare.account_id .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "cf_kv_namespace_id=$(jq -r .preview.cloudflare.kv_namespace_id .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.cfg.outputs.aws_role_arn }}
           aws-region: ${{ steps.cfg.outputs.region }}
 
       - name: Derive names
@@ -43,7 +46,7 @@ jobs:
           REPO_NAME="preview/${{ github.event.repository.name }}"
 
           REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          SLUG=$(echo "$REF" \
+          BRANCH_SLUG=$(echo "$REF" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | sed 's/--*/-/g' \
@@ -51,13 +54,18 @@ jobs:
             | sed 's/-$//' \
             | cut -c1-50)
 
-          echo "slug=$SLUG" >> $GITHUB_OUTPUT
-          echo "service=preview-$SLUG" >> $GITHUB_OUTPUT
-          echo "db=preview_$(echo $SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
+          PROJECT_SLUG="${{ steps.cfg.outputs.project_slug }}"
+          KV_KEY="${BRANCH_SLUG}--${PROJECT_SLUG}"
+
+          echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
+          echo "kv_key=$KV_KEY" >> $GITHUB_OUTPUT
+          echo "preview_url=https://${KV_KEY}.${{ steps.cfg.outputs.domain }}" >> $GITHUB_OUTPUT
+          echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
+          echo "db=preview_$(echo $BRANCH_SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
           echo "repo=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "image=$REGISTRY/$REPO_NAME:$SLUG-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
-          echo "image_latest=$REGISTRY/$REPO_NAME:$SLUG-latest" >> $GITHUB_OUTPUT
+          echo "image=$REGISTRY/$REPO_NAME:$BRANCH_SLUG-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          echo "image_latest=$REGISTRY/$REPO_NAME:$BRANCH_SLUG-latest" >> $GITHUB_OUTPUT
 
       # ── Build & Push to ECR ──────────────────────────────────
       - name: Ensure ECR repository exists
@@ -90,9 +98,8 @@ jobs:
       # ── Database ─────────────────────────────────────────────
       - name: Create preview database
         run: |
-          # Connect directly to the RDS instance via mysql client
-          mysql -h "${{ secrets.DB_HOST }}" \
-            -u "${{ secrets.DB_USERNAME }}" \
+          mysql -h "${{ steps.cfg.outputs.db_host }}" \
+            -u "${{ steps.cfg.outputs.db_username }}" \
             -p"${{ secrets.DB_PASSWORD }}" \
             -e "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
 
@@ -118,7 +125,7 @@ jobs:
             --service-name "${{ steps.slug.outputs.service }}" \
             --source-configuration "{
               \"AuthenticationConfiguration\": {
-                \"AccessRoleArn\": \"${{ secrets.APPRUNNER_ECR_ROLE_ARN }}\"
+                \"AccessRoleArn\": \"${{ steps.cfg.outputs.ecr_role_arn }}\"
               },
               \"AutoDeploymentsEnabled\": false,
               \"ImageRepository\": {
@@ -129,11 +136,11 @@ jobs:
                   \"RuntimeEnvironmentVariables\": {
                     \"APP_ENV\": \"preview\",
                     \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
-                    \"APP_URL\": \"https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}\",
-                    \"DB_HOST\": \"${{ secrets.DB_HOST }}\",
+                    \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
+                    \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
                     \"DB_PORT\": \"3306\",
                     \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
-                    \"DB_USERNAME\": \"${{ secrets.DB_USERNAME }}\",
+                    \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
                     \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
                   }
                 }
@@ -142,7 +149,7 @@ jobs:
             --instance-configuration "{
               \"Cpu\": \"0.25 vCPU\",
               \"Memory\": \"1 GB\",
-              \"InstanceRoleArn\": \"${{ secrets.APPRUNNER_INSTANCE_ROLE_ARN }}\"
+              \"InstanceRoleArn\": \"${{ steps.cfg.outputs.instance_role_arn }}\"
             }" \
             --health-check-configuration '{
               "Protocol": "HTTP",
@@ -163,7 +170,7 @@ jobs:
             --service-arn "${{ steps.svc.outputs.arn }}" \
             --source-configuration "{
               \"AuthenticationConfiguration\": {
-                \"AccessRoleArn\": \"${{ secrets.APPRUNNER_ECR_ROLE_ARN }}\"
+                \"AccessRoleArn\": \"${{ steps.cfg.outputs.ecr_role_arn }}\"
               },
               \"AutoDeploymentsEnabled\": false,
               \"ImageRepository\": {
@@ -174,11 +181,11 @@ jobs:
                   \"RuntimeEnvironmentVariables\": {
                     \"APP_ENV\": \"preview\",
                     \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
-                    \"APP_URL\": \"https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}\",
-                    \"DB_HOST\": \"${{ secrets.DB_HOST }}\",
+                    \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
+                    \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
                     \"DB_PORT\": \"3306\",
                     \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
-                    \"DB_USERNAME\": \"${{ secrets.DB_USERNAME }}\",
+                    \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
                     \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
                   }
                 }
@@ -197,11 +204,11 @@ jobs:
               --output text)
             echo "  Status: $STATUS (attempt $i/60)"
             if [ "$STATUS" = "RUNNING" ]; then
-              URL=$(aws apprunner describe-service \
+              RUNNER_URL=$(aws apprunner describe-service \
                 --service-arn "$SERVICE_ARN" \
                 --query 'Service.ServiceUrl' \
                 --output text)
-              echo "service_url=$URL" >> $GITHUB_OUTPUT
+              echo "runner_url=$RUNNER_URL" >> $GITHUB_OUTPUT
               break
             fi
             if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ]; then
@@ -211,45 +218,16 @@ jobs:
             sleep 10
           done
 
-      # ── DNS ──────────────────────────────────────────────────
-      - name: Update Cloudflare DNS
+      # ── Cloudflare KV ─────────────────────────────────────────
+      - name: Register preview in Cloudflare KV
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
-          SUBDOMAIN="${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}"
-          SERVICE_URL="${{ steps.wait.outputs.service_url }}"
-
-          # Check if record exists
-          RECORD_ID=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$SUBDOMAIN&type=CNAME" \
+          curl -s -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.cfg.outputs.cf_account_id }}/storage/kv/namespaces/${{ steps.cfg.outputs.cf_kv_namespace_id }}/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            | jq -r '.result[0].id // empty')
-
-          if [ -n "$RECORD_ID" ]; then
-            curl -s -X PUT \
-              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
-              -H "Authorization: Bearer $CF_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "{
-                \"type\": \"CNAME\",
-                \"name\": \"$SUBDOMAIN\",
-                \"content\": \"$SERVICE_URL\",
-                \"proxied\": true
-              }"
-          else
-            curl -s -X POST \
-              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
-              -H "Authorization: Bearer $CF_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "{
-                \"type\": \"CNAME\",
-                \"name\": \"$SUBDOMAIN\",
-                \"content\": \"$SERVICE_URL\",
-                \"proxied\": true
-              }"
-          fi
+            -H "Content-Type: text/plain" \
+            --data "https://${{ steps.wait.outputs.runner_url }}"
 
       # ── Summary ──────────────────────────────────────────────
       - name: Post preview URL
@@ -257,13 +235,11 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const slug = '${{ steps.slug.outputs.slug }}';
-            const domain = '${{ steps.cfg.outputs.domain }}';
-            const url = `https://${slug}.${domain}`;
+            const url = '${{ steps.slug.outputs.preview_url }}';
             const body = [
               '## Preview Environment',
               '',
-              `**${url}**`,
+              `**[${url}](${url})**`,
               '',
               `Branch: \`${process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME}\``,
               `Database: \`${{ steps.slug.outputs.db }}\``,

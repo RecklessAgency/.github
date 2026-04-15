@@ -18,27 +18,33 @@ jobs:
         id: cfg
         run: |
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "cf_account_id=$(jq -r .preview.cloudflare.account_id .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "cf_kv_namespace_id=$(jq -r .preview.cloudflare.kv_namespace_id .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Derive branch slug
         id: slug
         run: |
           REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          SLUG=$(echo "$REF" \
+          BRANCH_SLUG=$(echo "$REF" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | sed 's/--*/-/g' \
             | sed 's/^-//' \
             | sed 's/-$//' \
             | cut -c1-50)
-          echo "slug=$SLUG" >> $GITHUB_OUTPUT
-          echo "service=preview-$SLUG" >> $GITHUB_OUTPUT
-          echo "db=preview_$(echo $SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
+          echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
+          echo "kv_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
+          echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
+          echo "db=preview_$(echo $BRANCH_SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.cfg.outputs.aws_role_arn }}
           aws-region: ${{ steps.cfg.outputs.region }}
 
       # ── Delete App Runner service ────────────────────────────
@@ -60,42 +66,26 @@ jobs:
       - name: Drop preview database
         run: |
           echo "Dropping database: ${{ steps.slug.outputs.db }}"
-          mysql -h "${{ secrets.DB_HOST }}" \
-            -u "${{ secrets.DB_USERNAME }}" \
+          mysql -h "${{ steps.cfg.outputs.db_host }}" \
+            -u "${{ steps.cfg.outputs.db_username }}" \
             -p"${{ secrets.DB_PASSWORD }}" \
             -e "DROP DATABASE IF EXISTS \`${{ steps.slug.outputs.db }}\`"
 
-      # ── Remove DNS record ────────────────────────────────────
-      - name: Remove Cloudflare DNS record
+      # ── Remove Cloudflare KV entry ───────────────────────────
+      - name: Remove preview from Cloudflare KV
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
-          SUBDOMAIN="${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}"
-
-          RECORD_ID=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$SUBDOMAIN&type=CNAME" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            | jq -r '.result[0].id // empty')
-
-          if [ -n "$RECORD_ID" ]; then
-            echo "Removing DNS record for $SUBDOMAIN"
-            curl -s -X DELETE \
-              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
-              -H "Authorization: Bearer $CF_API_TOKEN" \
-              -H "Content-Type: application/json"
-          else
-            echo "No DNS record found for $SUBDOMAIN — skipping"
-          fi
+          curl -s -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.cfg.outputs.cf_account_id }}/storage/kv/namespaces/${{ steps.cfg.outputs.cf_kv_namespace_id }}/values/${{ steps.slug.outputs.kv_key }}" \
+            -H "Authorization: Bearer $CF_API_TOKEN"
 
       # ── Clean up ECR images ──────────────────────────────────
       - name: Clean up ECR images
         run: |
           REPO="preview/${{ github.event.repository.name }}"
-          SLUG="${{ steps.slug.outputs.slug }}"
+          SLUG="${{ steps.slug.outputs.branch_slug }}"
 
-          # List images tagged with this branch slug
           IMAGES=$(aws ecr list-images \
             --repository-name "$REPO" \
             --query "imageIds[?starts_with(imageTag, '${SLUG}-')]" \
@@ -116,5 +106,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Service: \`${{ steps.slug.outputs.service }}\` — deleted" >> $GITHUB_STEP_SUMMARY
           echo "- Database: \`${{ steps.slug.outputs.db }}\` — dropped" >> $GITHUB_STEP_SUMMARY
-          echo "- DNS: \`${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}\` — removed" >> $GITHUB_STEP_SUMMARY
+          echo "- Preview URL: removed from KV (\`${{ steps.slug.outputs.kv_key }}\`)" >> $GITHUB_STEP_SUMMARY
           echo "- Images: cleaned up" >> $GITHUB_STEP_SUMMARY
