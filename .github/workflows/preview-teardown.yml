@@ -22,7 +22,6 @@ jobs:
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "cf_kv_namespace_id=$(jq -r .preview.cloudflare.kv_namespace_id .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Derive branch slug
         id: slug
@@ -76,7 +75,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           curl -s -X DELETE \
-            "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/${{ steps.cfg.outputs.cf_kv_namespace_id }}/values/${{ steps.slug.outputs.kv_key }}" \
+            "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN"
 
       # ── Clean up ECR images ──────────────────────────────────
