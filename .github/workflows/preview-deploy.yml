@@ -170,8 +170,7 @@ jobs:
               \"InstanceRoleArn\": \"${{ steps.cfg.outputs.instance_role_arn }}\"
             }" \
             --health-check-configuration '{
-              "Protocol": "HTTP",
-              "Path": "/up",
+              "Protocol": "TCP",
               "Interval": 10,
               "Timeout": 5,
               "HealthyThreshold": 1,
