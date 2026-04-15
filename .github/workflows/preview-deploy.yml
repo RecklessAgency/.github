@@ -250,6 +250,9 @@ jobs:
         if: steps.task.outputs.exists == 'false'
         run: |
           IP="${{ steps.ip.outputs.public_ip }}"
+          TASK_ID=$(basename "${{ steps.run.outputs.arn }}")
+          LOG_STREAM="ecs/app/${TASK_ID}"
+          NEXT_TOKEN=""
           echo "Waiting for app to respond at http://$IP/ ..."
           for i in $(seq 1 60); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$IP/" 2>/dev/null || true)
@@ -262,6 +265,28 @@ jobs:
               exit 1
             fi
             echo "  Not ready yet (attempt $i/60, status: ${STATUS:-none})"
+            # Print new container log lines since last check
+            if [ -z "$NEXT_TOKEN" ]; then
+              LOGS=$(aws logs get-log-events \
+                --log-group-name /ecs/preview \
+                --log-stream-name "$LOG_STREAM" \
+                --region "${{ steps.cfg.outputs.region }}" \
+                --limit 20 \
+                --output json 2>/dev/null || true)
+            else
+              LOGS=$(aws logs get-log-events \
+                --log-group-name /ecs/preview \
+                --log-stream-name "$LOG_STREAM" \
+                --region "${{ steps.cfg.outputs.region }}" \
+                --next-token "$NEXT_TOKEN" \
+                --limit 20 \
+                --output json 2>/dev/null || true)
+            fi
+            if [ -n "$LOGS" ]; then
+              echo "$LOGS" | jq -r '.events[].message' 2>/dev/null | sed 's/^/  [container] /' || true
+              NEW_TOKEN=$(echo "$LOGS" | jq -r '.nextForwardToken' 2>/dev/null || true)
+              [ -n "$NEW_TOKEN" ] && NEXT_TOKEN="$NEW_TOKEN"
+            fi
             sleep 10
           done
 
