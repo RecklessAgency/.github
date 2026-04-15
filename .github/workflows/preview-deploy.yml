@@ -165,6 +165,7 @@ jobs:
             --cpu 256 \
             --memory 512 \
             --execution-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-execution" \
+            --task-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-task" \
             --container-definitions "[{
               \"name\": \"app\",
               \"image\": \"${{ steps.resolved.outputs.image }}\",
