@@ -36,7 +36,7 @@ if [ -f docker/preview-db-init.sh ]; then
         mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
     fi
 
-    mysqld_safe --user=mysql --skip-networking=0 &
+    mysqld_safe --user=mysql --skip-networking=0 --log-error=/dev/stderr &
 
     echo "Waiting for MySQL..."
     until mysqladmin ping --silent 2>/dev/null; do
