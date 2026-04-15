@@ -150,7 +150,6 @@ jobs:
               \"name\": \"app\",
               \"image\": \"${{ steps.resolved.outputs.image }}\",
               \"portMappings\": [{\"containerPort\": 80, \"protocol\": \"tcp\"}],
-              \"enableExecuteCommand\": true,
               \"environment\": [
                 {\"name\": \"APP_ENV\", \"value\": \"preview\"},
                 {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
