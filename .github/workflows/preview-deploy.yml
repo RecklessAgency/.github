@@ -149,7 +149,7 @@ jobs:
             --cluster default \
             --task "${{ steps.task.outputs.arn }}" \
             --container app \
-            --command "/bin/sh -c 'cd /var/www/html && git pull && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache'" \
+            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache'" \
             --interactive
 
       # ── Slow path: launch new task ────────────────────────────
