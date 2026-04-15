@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && install-php-extensions intl bcmath zip
+    && install-php-extensions intl bcmath zip gd redis
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
