@@ -21,13 +21,6 @@ cd /var/www/html
 # ── PHP dependencies ──────────────────────────────────────────
 composer install --no-dev --optimize-autoloader --no-interaction --no-scripts --ignore-platform-reqs
 
-# ── JS dependencies & assets ──────────────────────────────────
-if [ -f package.json ]; then
-    npm ci
-    npm run production 2>/dev/null || npm run build 2>/dev/null || true
-    rm -rf node_modules
-fi
-
 php artisan package:discover --ansi 2>/dev/null || true
 
 # ── Database (optional) ───────────────────────────────────────
@@ -71,6 +64,14 @@ if [ -f artisan ]; then
     php artisan view:cache
     php artisan migrate --force
     php artisan db:seed --force 2>/dev/null || true
+
+    # ── JS dependencies & assets ──────────────────────────────
+    if [ -f package.json ]; then
+        npm ci
+        npm run production 2>/dev/null || npm run build 2>/dev/null || true
+        rm -rf node_modules
+    fi
+
     exec php artisan serve --host=0.0.0.0 --port=80
 fi
 
