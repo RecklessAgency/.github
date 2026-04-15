@@ -34,6 +34,23 @@ Run `/workflow-setup` in Claude Code to create `.claude/project.json`, `.github/
 
 If the project includes `docker/preview-db-init.sh`, the container starts a local MySQL instance and runs the script before booting the app. The script receives a running MySQL server (root, no password, unix socket) and must export `DB_DATABASE`.
 
+---
+
+### `build-php-image.yml`
+
+Builds and pushes the `reckless/php` base image to ECR.
+
+- **Trigger**: Push to `main` when `docker/php/**` changes, or manually via `workflow_dispatch` (with optional `php_version` input, defaults to `8.4`).
+- **Platform**: `linux/arm64` (matches Fargate task definition and Apple Silicon dev machines).
+- **Tags**: `:8.4` (mutable, always latest) and `:8.4-{sha}` (immutable, for rollback).
+- **Source**: `docker/php/` — `Dockerfile` + `entrypoint.sh`.
+
+The entrypoint handles: SSH deploy key setup, `git clone`, `composer install`, optional `npm build`, optional local MySQL (if `docker/preview-db-init.sh` exists), Laravel caches, `php artisan migrate`, then `php artisan serve`.
+
+To rebuild manually (e.g. after updating the entrypoint or Dockerfile): **Actions → Build PHP Base Image → Run workflow**.
+
+---
+
 #### Shared AWS infrastructure (one-time setup)
 
 | Resource | Value |
