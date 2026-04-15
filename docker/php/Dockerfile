@@ -2,13 +2,10 @@ ARG PHP_VERSION=8.4
 
 FROM php:${PHP_VERSION}-cli-alpine
 
-RUN apk add --no-cache \
-        nodejs npm git openssh-client \
-        icu-dev libzip-dev oniguruma-dev \
-        mysql mysql-client \
-    && docker-php-ext-install -j$(nproc) \
-        intl zip pdo_mysql mbstring bcmath pcntl \
-    && apk del icu-dev libzip-dev oniguruma-dev
+COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
+
+RUN apk add --no-cache nodejs npm git openssh-client mysql mysql-client \
+    && install-php-extensions intl zip pdo_mysql mbstring bcmath pcntl
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
