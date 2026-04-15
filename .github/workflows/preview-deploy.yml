@@ -8,16 +8,13 @@ on:
         type: string
         description: "laravel or wordpress"
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
       id-token: write  # OIDC
+      pull-requests: write  # PR comments
 
     steps:
       # ── Context ──────────────────────────────────────────────
@@ -31,9 +28,20 @@ jobs:
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
           echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
 
-      - name: Derive branch slug
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ steps.cfg.outputs.region }}
+
+      - name: Derive names
         id: slug
         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ steps.cfg.outputs.region }}"
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+          REPO_NAME="preview/${{ github.event.repository.name }}"
+
           REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           SLUG=$(echo "$REF" \
             | tr '[:upper:]' '[:lower:]' \
@@ -42,18 +50,26 @@ jobs:
             | sed 's/^-//' \
             | sed 's/-$//' \
             | cut -c1-50)
+
           echo "slug=$SLUG" >> $GITHUB_OUTPUT
           echo "service=preview-$SLUG" >> $GITHUB_OUTPUT
           echo "db=preview_$(echo $SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
-          echo "image=${{ env.REGISTRY }}/${{ github.repository }}:$SLUG-${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "repo=$REPO_NAME" >> $GITHUB_OUTPUT
+          echo "image=$REGISTRY/$REPO_NAME:$SLUG-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          echo "image_latest=$REGISTRY/$REPO_NAME:$SLUG-latest" >> $GITHUB_OUTPUT
 
-      # ── Build & Push ─────────────────────────────────────────
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # ── Build & Push to ECR ──────────────────────────────────
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories \
+            --repository-names "${{ steps.slug.outputs.repo }}" 2>/dev/null \
+          || aws ecr create-repository \
+            --repository-name "${{ steps.slug.outputs.repo }}" \
+            --image-scanning-configuration scanOnPush=false
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -65,26 +81,20 @@ jobs:
           push: true
           tags: |
             ${{ steps.slug.outputs.image }}
-            ${{ env.REGISTRY }}/${{ github.repository }}:${{ steps.slug.outputs.slug }}-latest
+            ${{ steps.slug.outputs.image_latest }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             PHP_VERSION=${{ steps.cfg.outputs.php }}
 
-      # ── AWS Auth ─────────────────────────────────────────────
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ steps.cfg.outputs.region }}
-
       # ── Database ─────────────────────────────────────────────
       - name: Create preview database
         run: |
-          aws rds-data execute-statement \
-            --resource-arn "${{ secrets.DB_CLUSTER_ARN }}" \
-            --secret-arn "${{ secrets.DB_SECRET_ARN }}" \
-            --sql "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
+          # Connect directly to the RDS instance via mysql client
+          mysql -h "${{ secrets.DB_HOST }}" \
+            -u "${{ secrets.DB_USERNAME }}" \
+            -p"${{ secrets.DB_PASSWORD }}" \
+            -e "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
 
       # ── App Runner ───────────────────────────────────────────
       - name: Check if service exists
@@ -106,34 +116,34 @@ jobs:
         run: |
           ARN=$(aws apprunner create-service \
             --service-name "${{ steps.slug.outputs.service }}" \
-            --source-configuration '{
-              "AuthenticationConfiguration": {
-                "AccessRoleArn": "${{ secrets.APPRUNNER_ECR_ROLE_ARN }}"
+            --source-configuration "{
+              \"AuthenticationConfiguration\": {
+                \"AccessRoleArn\": \"${{ secrets.APPRUNNER_ECR_ROLE_ARN }}\"
               },
-              "AutoDeploymentsEnabled": false,
-              "ImageRepository": {
-                "ImageIdentifier": "${{ steps.slug.outputs.image }}",
-                "ImageRepositoryType": "ECR_PUBLIC",
-                "ImageConfiguration": {
-                  "Port": "80",
-                  "RuntimeEnvironmentVariables": {
-                    "APP_ENV": "preview",
-                    "APP_KEY": "${{ secrets.APP_KEY }}",
-                    "APP_URL": "https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}",
-                    "DB_HOST": "${{ secrets.DB_HOST }}",
-                    "DB_PORT": "3306",
-                    "DB_DATABASE": "${{ steps.slug.outputs.db }}",
-                    "DB_USERNAME": "${{ secrets.DB_USERNAME }}",
-                    "DB_PASSWORD": "${{ secrets.DB_PASSWORD }}"
+              \"AutoDeploymentsEnabled\": false,
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"${{ steps.slug.outputs.image }}\",
+                \"ImageRepositoryType\": \"ECR\",
+                \"ImageConfiguration\": {
+                  \"Port\": \"80\",
+                  \"RuntimeEnvironmentVariables\": {
+                    \"APP_ENV\": \"preview\",
+                    \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
+                    \"APP_URL\": \"https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}\",
+                    \"DB_HOST\": \"${{ secrets.DB_HOST }}\",
+                    \"DB_PORT\": \"3306\",
+                    \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
+                    \"DB_USERNAME\": \"${{ secrets.DB_USERNAME }}\",
+                    \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
                   }
                 }
               }
-            }' \
-            --instance-configuration '{
-              "Cpu": "0.25 vCPU",
-              "Memory": "1 GB",
-              "InstanceRoleArn": "${{ secrets.APPRUNNER_INSTANCE_ROLE_ARN }}"
-            }' \
+            }" \
+            --instance-configuration "{
+              \"Cpu\": \"0.25 vCPU\",
+              \"Memory\": \"1 GB\",
+              \"InstanceRoleArn\": \"${{ secrets.APPRUNNER_INSTANCE_ROLE_ARN }}\"
+            }" \
             --health-check-configuration '{
               "Protocol": "HTTP",
               "Path": "/up",
@@ -151,31 +161,32 @@ jobs:
         run: |
           aws apprunner update-service \
             --service-arn "${{ steps.svc.outputs.arn }}" \
-            --source-configuration '{
-              "AuthenticationConfiguration": {
-                "AccessRoleArn": "${{ secrets.APPRUNNER_ECR_ROLE_ARN }}"
+            --source-configuration "{
+              \"AuthenticationConfiguration\": {
+                \"AccessRoleArn\": \"${{ secrets.APPRUNNER_ECR_ROLE_ARN }}\"
               },
-              "AutoDeploymentsEnabled": false,
-              "ImageRepository": {
-                "ImageIdentifier": "${{ steps.slug.outputs.image }}",
-                "ImageRepositoryType": "ECR_PUBLIC",
-                "ImageConfiguration": {
-                  "Port": "80",
-                  "RuntimeEnvironmentVariables": {
-                    "APP_ENV": "preview",
-                    "APP_KEY": "${{ secrets.APP_KEY }}",
-                    "APP_URL": "https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}",
-                    "DB_HOST": "${{ secrets.DB_HOST }}",
-                    "DB_PORT": "3306",
-                    "DB_DATABASE": "${{ steps.slug.outputs.db }}",
-                    "DB_USERNAME": "${{ secrets.DB_USERNAME }}",
-                    "DB_PASSWORD": "${{ secrets.DB_PASSWORD }}"
+              \"AutoDeploymentsEnabled\": false,
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"${{ steps.slug.outputs.image }}\",
+                \"ImageRepositoryType\": \"ECR\",
+                \"ImageConfiguration\": {
+                  \"Port\": \"80\",
+                  \"RuntimeEnvironmentVariables\": {
+                    \"APP_ENV\": \"preview\",
+                    \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
+                    \"APP_URL\": \"https://${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}\",
+                    \"DB_HOST\": \"${{ secrets.DB_HOST }}\",
+                    \"DB_PORT\": \"3306\",
+                    \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
+                    \"DB_USERNAME\": \"${{ secrets.DB_USERNAME }}\",
+                    \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
                   }
                 }
               }
-            }'
+            }"
 
       - name: Wait for service to be running
+        id: wait
         run: |
           SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
           echo "Waiting for $SERVICE_ARN to be RUNNING..."
@@ -190,21 +201,15 @@ jobs:
                 --service-arn "$SERVICE_ARN" \
                 --query 'Service.ServiceUrl' \
                 --output text)
-              echo "url=$URL" >> $GITHUB_OUTPUT
+              echo "service_url=$URL" >> $GITHUB_OUTPUT
               break
+            fi
+            if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ]; then
+              echo "Service failed with status: $STATUS"
+              exit 1
             fi
             sleep 10
           done
-
-      # ── Migrations ───────────────────────────────────────────
-      - name: Run migrations (Laravel)
-        if: inputs.stack == 'laravel'
-        run: |
-          SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
-          # Migrations run inside the container on first request to /up
-          # or we can trigger via a one-off curl to an artisan endpoint
-          # For now, rely on the health check hitting /up which triggers migration check
-          echo "Service deployed — migrations will run on first request"
 
       # ── DNS ──────────────────────────────────────────────────
       - name: Update Cloudflare DNS
@@ -213,10 +218,7 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
           SUBDOMAIN="${{ steps.slug.outputs.slug }}.${{ steps.cfg.outputs.domain }}"
-          SERVICE_URL=$(aws apprunner describe-service \
-            --service-arn "${{ steps.create.outputs.arn || steps.svc.outputs.arn }}" \
-            --query 'Service.ServiceUrl' \
-            --output text)
+          SERVICE_URL="${{ steps.wait.outputs.service_url }}"
 
           # Check if record exists
           RECORD_ID=$(curl -s -X GET \
@@ -226,7 +228,6 @@ jobs:
             | jq -r '.result[0].id // empty')
 
           if [ -n "$RECORD_ID" ]; then
-            # Update existing record
             curl -s -X PUT \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
@@ -238,7 +239,6 @@ jobs:
                 \"proxied\": true
               }"
           else
-            # Create new record
             curl -s -X POST \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
@@ -253,39 +253,44 @@ jobs:
 
       # ── Summary ──────────────────────────────────────────────
       - name: Post preview URL
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const slug = '${{ steps.slug.outputs.slug }}';
             const domain = '${{ steps.cfg.outputs.domain }}';
             const url = `https://${slug}.${domain}`;
-            const body = `## Preview Environment\n\n🔗 **${url}**\n\nBranch: \`${process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME}\`\nImage: \`${{ steps.slug.outputs.image }}\`\nDatabase: \`${{ steps.slug.outputs.db }}\``;
+            const body = [
+              '## Preview Environment',
+              '',
+              `**${url}**`,
+              '',
+              `Branch: \`${process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME}\``,
+              `Database: \`${{ steps.slug.outputs.db }}\``,
+            ].join('\n');
 
-            // Find existing comment
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue?.number || 0,
-            }).catch(() => ({ data: [] }));
+              issue_number: context.issue.number,
+            });
 
             const existing = comments.find(c => c.body?.includes('## Preview Environment'));
 
-            if (context.issue?.number) {
-              if (existing) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: existing.id,
-                  body,
-                });
-              } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body,
-                });
-              }
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
             }
 
             core.summary.addRaw(body).write();

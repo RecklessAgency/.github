@@ -60,10 +60,10 @@ jobs:
       - name: Drop preview database
         run: |
           echo "Dropping database: ${{ steps.slug.outputs.db }}"
-          aws rds-data execute-statement \
-            --resource-arn "${{ secrets.DB_CLUSTER_ARN }}" \
-            --secret-arn "${{ secrets.DB_SECRET_ARN }}" \
-            --sql "DROP DATABASE IF EXISTS \`${{ steps.slug.outputs.db }}\`"
+          mysql -h "${{ secrets.DB_HOST }}" \
+            -u "${{ secrets.DB_USERNAME }}" \
+            -p"${{ secrets.DB_PASSWORD }}" \
+            -e "DROP DATABASE IF EXISTS \`${{ steps.slug.outputs.db }}\`"
 
       # ── Remove DNS record ────────────────────────────────────
       - name: Remove Cloudflare DNS record
@@ -89,34 +89,26 @@ jobs:
             echo "No DNS record found for $SUBDOMAIN — skipping"
           fi
 
-      # ── Delete container images ──────────────────────────────
-      - name: Clean up GHCR images
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const slug = '${{ steps.slug.outputs.slug }}';
-            try {
-              const { data: versions } = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
-                package_type: 'container',
-                package_name: context.repo.repo,
-                org: context.repo.owner,
-              });
-              const toDelete = versions.filter(v =>
-                v.metadata?.container?.tags?.some(t => t.startsWith(`${slug}-`))
-              );
-              for (const v of toDelete) {
-                console.log(`Deleting image version: ${v.id} (tags: ${v.metadata.container.tags})`);
-                await github.rest.packages.deletePackageVersionForOrg({
-                  package_type: 'container',
-                  package_name: context.repo.repo,
-                  org: context.repo.owner,
-                  package_version_id: v.id,
-                });
-              }
-              console.log(`Cleaned up ${toDelete.length} image(s)`);
-            } catch (e) {
-              console.log(`Image cleanup skipped: ${e.message}`);
-            }
+      # ── Clean up ECR images ──────────────────────────────────
+      - name: Clean up ECR images
+        run: |
+          REPO="preview/${{ github.event.repository.name }}"
+          SLUG="${{ steps.slug.outputs.slug }}"
+
+          # List images tagged with this branch slug
+          IMAGES=$(aws ecr list-images \
+            --repository-name "$REPO" \
+            --query "imageIds[?starts_with(imageTag, '${SLUG}-')]" \
+            --output json 2>/dev/null || echo "[]")
+
+          if [ "$IMAGES" != "[]" ] && [ -n "$IMAGES" ]; then
+            echo "Deleting images for slug $SLUG from $REPO"
+            aws ecr batch-delete-image \
+              --repository-name "$REPO" \
+              --image-ids "$IMAGES" || true
+          else
+            echo "No images found for slug $SLUG — skipping"
+          fi
 
       - name: Summary
         run: |
