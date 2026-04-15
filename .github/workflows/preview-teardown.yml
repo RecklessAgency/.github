@@ -66,13 +66,13 @@ jobs:
           echo "Dropping database: ${{ steps.slug.outputs.db }}"
           mysql -h "${{ steps.cfg.outputs.db_host }}" \
             -u "${{ steps.cfg.outputs.db_username }}" \
-            -p"${{ secrets.DB_PASSWORD }}" \
+            -p"${{ secrets.PREVIEWS_DB_PASSWORD }}" \
             -e "DROP DATABASE IF EXISTS \`${{ steps.slug.outputs.db }}\`"
 
       # ── Remove Cloudflare KV entry ───────────────────────────
       - name: Remove preview from Cloudflare KV
         env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
         run: |
           curl -s -X DELETE \
             "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \

@@ -98,7 +98,7 @@ jobs:
         run: |
           mysql -h "${{ steps.cfg.outputs.db_host }}" \
             -u "${{ steps.cfg.outputs.db_username }}" \
-            -p"${{ secrets.DB_PASSWORD }}" \
+            -p"${{ secrets.PREVIEWS_DB_PASSWORD }}" \
             -e "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
 
       # ── App Runner ───────────────────────────────────────────
@@ -133,13 +133,13 @@ jobs:
                   \"Port\": \"80\",
                   \"RuntimeEnvironmentVariables\": {
                     \"APP_ENV\": \"preview\",
-                    \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
+                    \"APP_KEY\": \"${{ secrets.PREVIEWS_APP_KEY }}\",
                     \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
                     \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
                     \"DB_PORT\": \"3306\",
                     \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
                     \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
-                    \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
+                    \"DB_PASSWORD\": \"${{ secrets.PREVIEWS_DB_PASSWORD }}\"
                   }
                 }
               }
@@ -178,13 +178,13 @@ jobs:
                   \"Port\": \"80\",
                   \"RuntimeEnvironmentVariables\": {
                     \"APP_ENV\": \"preview\",
-                    \"APP_KEY\": \"${{ secrets.APP_KEY }}\",
+                    \"APP_KEY\": \"${{ secrets.PREVIEWS_APP_KEY }}\",
                     \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
                     \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
                     \"DB_PORT\": \"3306\",
                     \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
                     \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
-                    \"DB_PASSWORD\": \"${{ secrets.DB_PASSWORD }}\"
+                    \"DB_PASSWORD\": \"${{ secrets.PREVIEWS_DB_PASSWORD }}\"
                   }
                 }
               }
@@ -219,7 +219,7 @@ jobs:
       # ── Cloudflare KV ─────────────────────────────────────────
       - name: Register preview in Cloudflare KV
         env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
         run: |
           curl -s -X PUT \
             "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
