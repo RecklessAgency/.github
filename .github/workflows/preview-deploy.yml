@@ -120,7 +120,7 @@ jobs:
                 {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
               ]
             }" \
-            --query 'expressGatewayService.serviceArn' \
+            --query 'service.serviceArn' \
             --output text)
           echo "arn=$ARN" >> $GITHUB_OUTPUT
 
@@ -147,13 +147,13 @@ jobs:
           for i in $(seq 1 60); do
             STATUS=$(aws ecs describe-express-gateway-service \
               --service-arn "$SERVICE_ARN" \
-              --query 'expressGatewayService.status.statusCode' \
+              --query 'service.status.statusCode' \
               --output text)
             echo "  Status: $STATUS (attempt $i/60)"
             if [ "$STATUS" = "ACTIVE" ]; then
               SERVICE_URL=$(aws ecs describe-express-gateway-service \
                 --service-arn "$SERVICE_ARN" \
-                --query 'expressGatewayService.activeConfigurations[0].ingressPaths[0].endpoint' \
+                --query 'service.activeConfigurations[0].ingressPaths[0].endpoint' \
                 --output text)
               echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
               break
