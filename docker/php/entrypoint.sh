@@ -62,6 +62,7 @@ fi
 export CACHE_DRIVER=${CACHE_DRIVER:-file}
 export SESSION_DRIVER=${SESSION_DRIVER:-file}
 export QUEUE_CONNECTION=${QUEUE_CONNECTION:-sync}
+export APP_KEY=${APP_KEY:-$(php -r 'echo "base64:".base64_encode(random_bytes(32));')}
 
 # ── Start ─────────────────────────────────────────────────────
 if [ -f artisan ]; then
