@@ -3,7 +3,7 @@ ARG PHP_VERSION=8.4
 FROM php:${PHP_VERSION}-cli-alpine
 
 RUN apk add --no-cache \
-        nodejs npm git \
+        nodejs npm git openssh-client \
         icu-dev libzip-dev oniguruma-dev \
         mysql mysql-client \
     && docker-php-ext-install -j$(nproc) \
