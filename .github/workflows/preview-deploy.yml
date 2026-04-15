@@ -249,17 +249,18 @@ jobs:
         if: steps.task.outputs.exists == 'false'
         run: |
           IP="${{ steps.ip.outputs.public_ip }}"
-          echo "Waiting for app to respond at http://$IP/up..."
+          echo "Waiting for app to respond at http://$IP/ ..."
           for i in $(seq 1 60); do
-            if curl -sf --max-time 5 "http://$IP/up" > /dev/null 2>&1; then
-              echo "App is responding"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$IP/" 2>/dev/null || true)
+            if [ -n "$STATUS" ] && [ "$STATUS" != "000" ] && [ "$STATUS" -lt 500 ]; then
+              echo "App is responding (HTTP $STATUS)"
               break
             fi
             if [ $i -eq 60 ]; then
               echo "Timed out waiting for app to respond"
               exit 1
             fi
-            echo "  Not ready yet (attempt $i/60)"
+            echo "  Not ready yet (attempt $i/60, status: ${STATUS:-none})"
             sleep 10
           done
 
