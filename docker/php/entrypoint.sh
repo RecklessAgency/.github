@@ -53,6 +53,7 @@ if [ -f docker/preview-db-init.sh ]; then
     . docker/preview-db-init.sh
 
     export DB_HOST=localhost
+    export DB_SOCKET=/var/run/mysqld/mysqld.sock
     export DB_USERNAME=root
     export DB_PASSWORD=
 fi
