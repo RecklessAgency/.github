@@ -1,4 +1,23 @@
 name: Preview Deploy
+# Architecture: Fargate run-task + Cloudflare Worker reverse proxy
+#
+# Each preview environment is a Fargate task running in a public subnet with a
+# public IP. There is no ALB or load balancer — traffic flows:
+#
+#   Visitor (HTTPS) → Cloudflare Edge → Cloudflare Worker → Fargate task (HTTP, public IP)
+#
+# Cloudflare handles TLS termination. The Worker→container leg is plain HTTP over
+# the public internet. This is acceptable for preview environments (ephemeral,
+# non-production data). If sensitive data handling is required, consider routing
+# through a Cloudflare Tunnel instead (requires NAT gateway for private subnets).
+#
+# Routing: the Worker looks up the KV key `{branch-slug}--{project-slug}` and
+# proxies to the stored value `http://{public-ip}`. The KV entry is written here
+# after the container passes a health check on /up, and removed by preview-teardown.yml.
+#
+# Container startup: the generic `reckless/php:{version}` ECR image clones the
+# repo at startup using an SSH deploy key (base64-encoded in DEPLOY_KEY env var),
+# runs composer/npm, migrates, and serves via `php artisan serve`.
 
 on:
   workflow_call:
