@@ -72,7 +72,7 @@ if [ -f artisan ]; then
         rm -rf node_modules
     fi
 
-    exec php artisan serve --host=0.0.0.0 --port=80
+    exec /init
 fi
 
 if [ -f docker/preview-start.sh ]; then

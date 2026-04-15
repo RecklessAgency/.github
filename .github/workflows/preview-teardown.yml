@@ -19,6 +19,7 @@ jobs:
         run: |
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
           echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Derive branch slug
@@ -33,7 +34,7 @@ jobs:
             | sed 's/-$//' \
             | cut -c1-50)
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "kv_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
+          echo "preview_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
           echo "task_family=preview-${BRANCH_SLUG}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
@@ -73,18 +74,32 @@ jobs:
             done
           fi
 
-      # ── Remove Cloudflare KV entry ────────────────────────────
-      - name: Remove preview from Cloudflare KV
+      # ── Delete Cloudflare DNS A record ───────────────────────
+      - name: Delete DNS A record
         env:
           CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.PREVIEWS_CLOUDFLARE_ZONE_ID }}
         run: |
-          curl -s -X DELETE \
-            "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
-            -H "Authorization: Bearer $CF_API_TOKEN"
+          HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
+
+          RECORD_ID=$(curl -s \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=A&name=${HOSTNAME}" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            | jq -r '.result[0].id // empty')
+
+          if [ -n "$RECORD_ID" ]; then
+            echo "Deleting DNS record $RECORD_ID for $HOSTNAME"
+            curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              | jq -r 'if .success then "DNS record deleted" else "ERROR: \(.errors)" end'
+          else
+            echo "No DNS record found for $HOSTNAME — skipping"
+          fi
 
       - name: Summary
         run: |
           echo "## Teardown Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Tasks stopped for family: \`${{ steps.slug.outputs.task_family }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Preview URL removed from KV: \`${{ steps.slug.outputs.kv_key }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- DNS record deleted: \`${{ steps.slug.outputs.preview_key }}\`" >> $GITHUB_STEP_SUMMARY

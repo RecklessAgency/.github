@@ -1,6 +1,6 @@
 ARG PHP_VERSION=8.4
 
-FROM serversideup/php:${PHP_VERSION}-cli
+FROM serversideup/php:${PHP_VERSION}-fpm-nginx
 
 COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
 

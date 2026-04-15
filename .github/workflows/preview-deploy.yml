@@ -1,23 +1,18 @@
 name: Preview Deploy
-# Architecture: Fargate run-task + Cloudflare Worker reverse proxy
+# Architecture: Fargate run-task + Cloudflare DNS A record
 #
 # Each preview environment is a Fargate task running in a public subnet with a
 # public IP. There is no ALB or load balancer — traffic flows:
 #
-#   Visitor (HTTPS) → Cloudflare Edge → Cloudflare Worker → Fargate task (HTTP, public IP)
+#   Visitor (HTTP) → DNS A record → Fargate task public IP (port 80)
 #
-# Cloudflare handles TLS termination. The Worker→container leg is plain HTTP over
-# the public internet. This is acceptable for preview environments (ephemeral,
-# non-production data). If sensitive data handling is required, consider routing
-# through a Cloudflare Tunnel instead (requires NAT gateway for private subnets).
-#
-# Routing: the Worker looks up the KV key `{branch-slug}--{project-slug}` and
-# proxies to the stored value `http://{public-ip}`. The KV entry is written here
-# after the container passes a health check on /up, and removed by preview-teardown.yml.
+# An unproxied Cloudflare DNS A record is created per branch pointing directly
+# to the container's public IP (TTL 60). The record is written here after the
+# container passes a health check, and removed by preview-teardown.yml.
 #
 # Container startup: the generic `reckless/php:{version}` ECR image clones the
 # repo at startup using an SSH deploy key (base64-encoded in DEPLOY_KEY env var),
-# runs composer/npm, migrates, and serves via `php artisan serve`.
+# runs composer/npm, migrates, seeds, and serves via nginx + PHP-FPM.
 
 on:
   workflow_call:
@@ -66,10 +61,10 @@ jobs:
             | cut -c1-50)
 
           PROJECT_SLUG="${{ steps.cfg.outputs.project_slug }}"
-          KV_KEY="${BRANCH_SLUG}--${PROJECT_SLUG}"
+          PREVIEW_KEY="${BRANCH_SLUG}--${PROJECT_SLUG}"
 
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "kv_key=$KV_KEY" >> $GITHUB_OUTPUT
+          echo "preview_key=$PREVIEW_KEY" >> $GITHUB_OUTPUT
           echo "task_family=preview-${BRANCH_SLUG}" >> $GITHUB_OUTPUT
 
       # ── Build image (dockerfile projects only) ───────────────
@@ -174,7 +169,7 @@ jobs:
               \"environment\": [
                 {\"name\": \"APP_ENV\", \"value\": \"preview\"},
                 {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
-                {\"name\": \"APP_URL\", \"value\": \"https://${{ steps.slug.outputs.kv_key }}.${{ steps.cfg.outputs.domain }}\"},
+                {\"name\": \"APP_URL\", \"value\": \"http://${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}\"},
                 {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
                 {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
                 {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
@@ -290,17 +285,36 @@ jobs:
             sleep 10
           done
 
-      # ── Write to Cloudflare KV ────────────────────────────────
-      - name: Register preview in Cloudflare KV
+      # ── Create Cloudflare DNS A record ───────────────────────
+      - name: Create DNS A record
         if: steps.task.outputs.exists == 'false'
         env:
           CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.PREVIEWS_CLOUDFLARE_ZONE_ID }}
         run: |
-          curl -s -X PUT \
-            "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
+          HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
+          PUBLIC_IP="${{ steps.ip.outputs.public_ip }}"
+
+          # Delete any existing record with this name (idempotent re-deploy)
+          EXISTING_ID=$(curl -s \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=A&name=${HOSTNAME}" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: text/plain" \
-            --data "http://${{ steps.ip.outputs.public_ip }}"
+            | jq -r '.result[0].id // empty')
+
+          if [ -n "$EXISTING_ID" ]; then
+            echo "Deleting existing DNS record $EXISTING_ID for $HOSTNAME"
+            curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${EXISTING_ID}" \
+              -H "Authorization: Bearer $CF_API_TOKEN" > /dev/null
+          fi
+
+          echo "Creating DNS A record: $HOSTNAME → $PUBLIC_IP"
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":60,\"proxied\":false}" \
+            | jq -r 'if .success then "DNS record created: \(.result.name) → \(.result.content)" else "ERROR: \(.errors)" end'
 
       # ── Post PR comment ───────────────────────────────────────
       - name: Post preview URL
@@ -308,7 +322,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const slug = '${{ steps.slug.outputs.kv_key }}';
+            const slug = '${{ steps.slug.outputs.preview_key }}';
             const domain = '${{ steps.cfg.outputs.domain }}';
             const url = `https://${slug}.${domain}`;
             const body = [
