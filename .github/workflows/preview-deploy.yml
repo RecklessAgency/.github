@@ -110,11 +110,18 @@ jobs:
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ARN="arn:aws:ecs:${{ steps.cfg.outputs.region }}:${ACCOUNT_ID}:service/default/${{ steps.slug.outputs.service }}"
-          if aws ecs describe-express-gateway-service --service-arn "$ARN" 2>/dev/null; then
+          STATUS=$(aws ecs describe-express-gateway-service --service-arn "$ARN" \
+            --query 'service.status.statusCode' --output text 2>/dev/null || echo "NOT_FOUND")
+          echo "Service status: $STATUS"
+          if [ "$STATUS" = "NOT_FOUND" ] || [ "$STATUS" = "None" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+          elif [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "INACTIVE" ]; then
+            echo "Service is in terminal failure state ($STATUS), deleting and recreating..."
+            aws ecs delete-express-gateway-service --service-arn "$ARN" || true
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "arn=$ARN" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Create ECS Express service
@@ -158,12 +165,12 @@ jobs:
         run: |
           SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
           echo "Waiting for $SERVICE_ARN to be ACTIVE..."
-          for i in $(seq 1 60); do
+          for i in $(seq 1 120); do
             STATUS=$(aws ecs describe-express-gateway-service \
               --service-arn "$SERVICE_ARN" \
               --query 'service.status.statusCode' \
               --output text)
-            echo "  Status: $STATUS (attempt $i/60)"
+            echo "  Status: $STATUS (attempt $i/120)"
             if [ "$STATUS" = "ACTIVE" ]; then
               SERVICE_URL=$(aws ecs describe-express-gateway-service \
                 --service-arn "$SERVICE_ARN" \
