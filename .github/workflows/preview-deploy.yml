@@ -24,11 +24,8 @@ jobs:
           echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
           echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "ecr_role_arn=$(jq -r .preview.aws.ecr_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "instance_role_arn=$(jq -r .preview.aws.instance_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "db_create_script=$(jq -r '.preview.db_create_script // empty' .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "infrastructure_role_arn=$(jq -r .preview.aws.infrastructure_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -60,7 +57,6 @@ jobs:
           echo "kv_key=$KV_KEY" >> $GITHUB_OUTPUT
           echo "preview_url=https://${KV_KEY}.${{ steps.cfg.outputs.domain }}" >> $GITHUB_OUTPUT
           echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "db=preview_$(echo $BRANCH_SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
           echo "repo=$REPO_NAME" >> $GITHUB_OUTPUT
           echo "image=$REGISTRY/$REPO_NAME:$BRANCH_SLUG-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
@@ -94,120 +90,57 @@ jobs:
           build-args: |
             PHP_VERSION=${{ steps.cfg.outputs.php }}
 
-      # ── Database ─────────────────────────────────────────────
-      - name: Create preview database
-        run: |
-          mysql -h "${{ steps.cfg.outputs.db_host }}" \
-            -u "${{ steps.cfg.outputs.db_username }}" \
-            -p"${{ secrets.PREVIEWS_DB_PASSWORD }}" \
-            -e "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
-
-      - name: Run database create script
-        if: steps.cfg.outputs.db_create_script != ''
-        env:
-          DB_HOST: ${{ steps.cfg.outputs.db_host }}
-          DB_NAME: ${{ steps.slug.outputs.db }}
-          DB_USERNAME: ${{ steps.cfg.outputs.db_username }}
-          DB_PASSWORD: ${{ secrets.PREVIEWS_DB_PASSWORD }}
-        run: |
-          TABLE_COUNT=$(mysql -h "$DB_HOST" -u "$DB_USERNAME" -p"$DB_PASSWORD" \
-            -s -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME'")
-          echo "Existing tables: $TABLE_COUNT"
-          if [ "$TABLE_COUNT" = "0" ]; then
-            echo "Running ${{ steps.cfg.outputs.db_create_script }}..."
-            chmod +x "${{ steps.cfg.outputs.db_create_script }}"
-            bash "${{ steps.cfg.outputs.db_create_script }}"
-          else
-            echo "Database already has tables, skipping."
-          fi
-
-      # ── App Runner ───────────────────────────────────────────
+      # ── ECS Express ──────────────────────────────────────────
       - name: Check if service exists
         id: svc
         run: |
-          ARN=$(aws apprunner list-services \
-            --query "ServiceSummaryList[?ServiceName=='${{ steps.slug.outputs.service }}'].ServiceArn" \
+          ARN=$(aws ecs list-express-gateway-services \
+            --query "expressGatewayServiceArns[?contains(@, '${{ steps.slug.outputs.service }}')]" \
             --output text 2>/dev/null || true)
-          echo "arn=$ARN" >> $GITHUB_OUTPUT
           if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "arn=$ARN" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create App Runner service
+      - name: Create ECS Express service
         if: steps.svc.outputs.exists == 'false'
         id: create
         run: |
-          ARN=$(aws apprunner create-service \
+          ARN=$(aws ecs create-express-gateway-service \
             --service-name "${{ steps.slug.outputs.service }}" \
-            --source-configuration "{
-              \"AuthenticationConfiguration\": {
-                \"AccessRoleArn\": \"${{ steps.cfg.outputs.ecr_role_arn }}\"
-              },
-              \"AutoDeploymentsEnabled\": false,
-              \"ImageRepository\": {
-                \"ImageIdentifier\": \"${{ steps.slug.outputs.image }}\",
-                \"ImageRepositoryType\": \"ECR\",
-                \"ImageConfiguration\": {
-                  \"Port\": \"80\",
-                  \"RuntimeEnvironmentVariables\": {
-                    \"APP_ENV\": \"preview\",
-                    \"APP_KEY\": \"${{ secrets.PREVIEWS_APP_KEY }}\",
-                    \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
-                    \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
-                    \"DB_PORT\": \"3306\",
-                    \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
-                    \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
-                    \"DB_PASSWORD\": \"${{ secrets.PREVIEWS_DB_PASSWORD }}\"
-                  }
-                }
-              }
+            --execution-role-arn "${{ steps.cfg.outputs.execution_role_arn }}" \
+            --infrastructure-role-arn "${{ steps.cfg.outputs.infrastructure_role_arn }}" \
+            --primary-container "{
+              \"image\": \"${{ steps.slug.outputs.image }}\",
+              \"containerPort\": 80,
+              \"environment\": [
+                {\"name\": \"APP_ENV\", \"value\": \"preview\"},
+                {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
+                {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
+              ]
             }" \
-            --instance-configuration "{
-              \"Cpu\": \"0.25 vCPU\",
-              \"Memory\": \"1 GB\",
-              \"InstanceRoleArn\": \"${{ steps.cfg.outputs.instance_role_arn }}\"
-            }" \
-            --health-check-configuration '{
-              "Protocol": "TCP",
-              "Interval": 10,
-              "Timeout": 5,
-              "HealthyThreshold": 1,
-              "UnhealthyThreshold": 3
-            }' \
-            --query 'Service.ServiceArn' \
+            --region "${{ steps.cfg.outputs.region }}" \
+            --query 'expressGatewayService.expressGatewayServiceArn' \
             --output text)
           echo "arn=$ARN" >> $GITHUB_OUTPUT
 
-      - name: Update existing App Runner service
+      - name: Update ECS Express service
         if: steps.svc.outputs.exists == 'true'
         run: |
-          aws apprunner update-service \
-            --service-arn "${{ steps.svc.outputs.arn }}" \
-            --source-configuration "{
-              \"AuthenticationConfiguration\": {
-                \"AccessRoleArn\": \"${{ steps.cfg.outputs.ecr_role_arn }}\"
-              },
-              \"AutoDeploymentsEnabled\": false,
-              \"ImageRepository\": {
-                \"ImageIdentifier\": \"${{ steps.slug.outputs.image }}\",
-                \"ImageRepositoryType\": \"ECR\",
-                \"ImageConfiguration\": {
-                  \"Port\": \"80\",
-                  \"RuntimeEnvironmentVariables\": {
-                    \"APP_ENV\": \"preview\",
-                    \"APP_KEY\": \"${{ secrets.PREVIEWS_APP_KEY }}\",
-                    \"APP_URL\": \"${{ steps.slug.outputs.preview_url }}\",
-                    \"DB_HOST\": \"${{ steps.cfg.outputs.db_host }}\",
-                    \"DB_PORT\": \"3306\",
-                    \"DB_DATABASE\": \"${{ steps.slug.outputs.db }}\",
-                    \"DB_USERNAME\": \"${{ steps.cfg.outputs.db_username }}\",
-                    \"DB_PASSWORD\": \"${{ secrets.PREVIEWS_DB_PASSWORD }}\"
-                  }
-                }
-              }
-            }"
+          aws ecs update-express-gateway-service \
+            --express-gateway-service-arn "${{ steps.svc.outputs.arn }}" \
+            --primary-container "{
+              \"image\": \"${{ steps.slug.outputs.image }}\",
+              \"containerPort\": 80,
+              \"environment\": [
+                {\"name\": \"APP_ENV\", \"value\": \"preview\"},
+                {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
+                {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
+              ]
+            }" \
+            --region "${{ steps.cfg.outputs.region }}"
 
       - name: Wait for service to be running
         id: wait
@@ -215,17 +148,19 @@ jobs:
           SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
           echo "Waiting for $SERVICE_ARN to be RUNNING..."
           for i in $(seq 1 60); do
-            STATUS=$(aws apprunner describe-service \
-              --service-arn "$SERVICE_ARN" \
-              --query 'Service.Status' \
+            STATUS=$(aws ecs describe-express-gateway-service \
+              --express-gateway-service-arn "$SERVICE_ARN" \
+              --region "${{ steps.cfg.outputs.region }}" \
+              --query 'expressGatewayService.status' \
               --output text)
             echo "  Status: $STATUS (attempt $i/60)"
             if [ "$STATUS" = "RUNNING" ]; then
-              RUNNER_URL=$(aws apprunner describe-service \
-                --service-arn "$SERVICE_ARN" \
-                --query 'Service.ServiceUrl' \
+              SERVICE_URL=$(aws ecs describe-express-gateway-service \
+                --express-gateway-service-arn "$SERVICE_ARN" \
+                --region "${{ steps.cfg.outputs.region }}" \
+                --query 'expressGatewayService.serviceUrl' \
                 --output text)
-              echo "runner_url=$RUNNER_URL" >> $GITHUB_OUTPUT
+              echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
               break
             fi
             if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ]; then
@@ -244,7 +179,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: text/plain" \
-            --data "https://${{ steps.wait.outputs.runner_url }}"
+            --data "https://${{ steps.wait.outputs.service_url }}"
 
       # ── Summary ──────────────────────────────────────────────
       - name: Post preview URL
@@ -259,7 +194,6 @@ jobs:
               `**[${url}](${url})**`,
               '',
               `Branch: \`${process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME}\``,
-              `Database: \`${{ steps.slug.outputs.db }}\``,
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({

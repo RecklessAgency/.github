@@ -20,8 +20,6 @@ jobs:
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
           echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Derive branch slug
         id: slug
@@ -37,7 +35,6 @@ jobs:
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
           echo "kv_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
           echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "db=preview_$(echo $BRANCH_SLUG | tr '-' '_')" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -45,29 +42,22 @@ jobs:
           role-to-assume: ${{ steps.cfg.outputs.aws_role_arn }}
           aws-region: ${{ steps.cfg.outputs.region }}
 
-      # ── Delete App Runner service ────────────────────────────
-      - name: Find and delete App Runner service
+      # ── Delete ECS Express service ───────────────────────────
+      - name: Find and delete ECS Express service
         run: |
-          ARN=$(aws apprunner list-services \
-            --query "ServiceSummaryList[?ServiceName=='${{ steps.slug.outputs.service }}'].ServiceArn" \
+          ARN=$(aws ecs list-express-gateway-services \
+            --query "expressGatewayServiceArns[?contains(@, '${{ steps.slug.outputs.service }}')]" \
             --output text 2>/dev/null || true)
 
           if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
             echo "Deleting service: ${{ steps.slug.outputs.service }} ($ARN)"
-            aws apprunner delete-service --service-arn "$ARN"
+            aws ecs delete-express-gateway-service \
+              --express-gateway-service-arn "$ARN" \
+              --region "${{ steps.cfg.outputs.region }}"
             echo "Service deletion initiated"
           else
             echo "No service found for ${{ steps.slug.outputs.service }} — skipping"
           fi
-
-      # ── Drop database ────────────────────────────────────────
-      - name: Drop preview database
-        run: |
-          echo "Dropping database: ${{ steps.slug.outputs.db }}"
-          mysql -h "${{ steps.cfg.outputs.db_host }}" \
-            -u "${{ steps.cfg.outputs.db_username }}" \
-            -p"${{ secrets.PREVIEWS_DB_PASSWORD }}" \
-            -e "DROP DATABASE IF EXISTS \`${{ steps.slug.outputs.db }}\`"
 
       # ── Remove Cloudflare KV entry ───────────────────────────
       - name: Remove preview from Cloudflare KV
@@ -103,6 +93,5 @@ jobs:
           echo "## Teardown Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Service: \`${{ steps.slug.outputs.service }}\` — deleted" >> $GITHUB_STEP_SUMMARY
-          echo "- Database: \`${{ steps.slug.outputs.db }}\` — dropped" >> $GITHUB_STEP_SUMMARY
           echo "- Preview URL: removed from KV (\`${{ steps.slug.outputs.kv_key }}\`)" >> $GITHUB_STEP_SUMMARY
           echo "- Images: cleaned up" >> $GITHUB_STEP_SUMMARY
