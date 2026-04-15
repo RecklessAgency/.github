@@ -45,15 +45,12 @@ jobs:
       # ── Delete ECS Express service ───────────────────────────
       - name: Find and delete ECS Express service
         run: |
-          ARN=$(aws ecs list-express-gateway-services \
-            --query "expressGatewayServiceArns[?contains(@, '${{ steps.slug.outputs.service }}')]" \
-            --output text 2>/dev/null || true)
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ARN="arn:aws:ecs:${{ steps.cfg.outputs.region }}:${ACCOUNT_ID}:service/default/${{ steps.slug.outputs.service }}"
 
-          if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
-            echo "Deleting service: ${{ steps.slug.outputs.service }} ($ARN)"
-            aws ecs delete-express-gateway-service \
-              --express-gateway-service-arn "$ARN" \
-              --region "${{ steps.cfg.outputs.region }}"
+          if aws ecs describe-express-gateway-service --service-arn "$ARN" 2>/dev/null; then
+            echo "Deleting service: ${{ steps.slug.outputs.service }}"
+            aws ecs delete-express-gateway-service --service-arn "$ARN"
             echo "Service deletion initiated"
           else
             echo "No service found for ${{ steps.slug.outputs.service }} — skipping"

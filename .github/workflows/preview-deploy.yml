@@ -94,10 +94,9 @@ jobs:
       - name: Check if service exists
         id: svc
         run: |
-          ARN=$(aws ecs list-express-gateway-services \
-            --query "expressGatewayServiceArns[?contains(@, '${{ steps.slug.outputs.service }}')]" \
-            --output text 2>/dev/null || true)
-          if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ARN="arn:aws:ecs:${{ steps.cfg.outputs.region }}:${ACCOUNT_ID}:service/default/${{ steps.slug.outputs.service }}"
+          if aws ecs describe-express-gateway-service --service-arn "$ARN" 2>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "arn=$ARN" >> $GITHUB_OUTPUT
           else
@@ -121,8 +120,7 @@ jobs:
                 {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
               ]
             }" \
-            --region "${{ steps.cfg.outputs.region }}" \
-            --query 'expressGatewayService.expressGatewayServiceArn' \
+            --query 'expressGatewayService.serviceArn' \
             --output text)
           echo "arn=$ARN" >> $GITHUB_OUTPUT
 
@@ -130,7 +128,7 @@ jobs:
         if: steps.svc.outputs.exists == 'true'
         run: |
           aws ecs update-express-gateway-service \
-            --express-gateway-service-arn "${{ steps.svc.outputs.arn }}" \
+            --service-arn "${{ steps.svc.outputs.arn }}" \
             --primary-container "{
               \"image\": \"${{ steps.slug.outputs.image }}\",
               \"containerPort\": 80,
@@ -139,31 +137,28 @@ jobs:
                 {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
                 {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
               ]
-            }" \
-            --region "${{ steps.cfg.outputs.region }}"
+            }"
 
-      - name: Wait for service to be running
+      - name: Wait for service to be active
         id: wait
         run: |
           SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
-          echo "Waiting for $SERVICE_ARN to be RUNNING..."
+          echo "Waiting for $SERVICE_ARN to be ACTIVE..."
           for i in $(seq 1 60); do
             STATUS=$(aws ecs describe-express-gateway-service \
-              --express-gateway-service-arn "$SERVICE_ARN" \
-              --region "${{ steps.cfg.outputs.region }}" \
-              --query 'expressGatewayService.status' \
+              --service-arn "$SERVICE_ARN" \
+              --query 'expressGatewayService.status.statusCode' \
               --output text)
             echo "  Status: $STATUS (attempt $i/60)"
-            if [ "$STATUS" = "RUNNING" ]; then
+            if [ "$STATUS" = "ACTIVE" ]; then
               SERVICE_URL=$(aws ecs describe-express-gateway-service \
-                --express-gateway-service-arn "$SERVICE_ARN" \
-                --region "${{ steps.cfg.outputs.region }}" \
-                --query 'expressGatewayService.serviceUrl' \
+                --service-arn "$SERVICE_ARN" \
+                --query 'expressGatewayService.activeConfigurations[0].ingressPaths[0].endpoint' \
                 --output text)
               echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
               break
             fi
-            if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ]; then
+            if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ] || [ "$STATUS" = "INACTIVE" ]; then
               echo "Service failed with status: $STATUS"
               exit 1
             fi
