@@ -52,8 +52,7 @@ if [ -f docker/preview-db-init.sh ]; then
 
     sh docker/preview-db-init.sh
 
-    export DB_HOST=
-    export DB_SOCKET=/var/run/mysqld/mysqld.sock
+    export DB_HOST=127.0.0.1
     export DB_USERNAME=root
     export DB_PASSWORD=
 fi
@@ -69,6 +68,7 @@ if [ -f artisan ]; then
     php artisan route:cache
     php artisan view:cache
     php artisan migrate --force
+    php artisan db:seed --force 2>/dev/null || true
     exec php artisan serve --host=0.0.0.0 --port=80
 fi
 
