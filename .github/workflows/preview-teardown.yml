@@ -34,7 +34,7 @@ jobs:
             | cut -c1-50)
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
           echo "kv_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
-          echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
+          echo "task_family=preview-${BRANCH_SLUG}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -42,21 +42,38 @@ jobs:
           role-to-assume: ${{ steps.cfg.outputs.aws_role_arn }}
           aws-region: ${{ steps.cfg.outputs.region }}
 
-      # ── Delete ECS Express service ───────────────────────────
-      - name: Find and delete ECS Express service
+      # ── Stop running tasks ────────────────────────────────────
+      - name: Stop preview tasks
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ARN="arn:aws:ecs:${{ steps.cfg.outputs.region }}:${ACCOUNT_ID}:service/default/${{ steps.slug.outputs.service }}"
+          TASKS=$(aws ecs list-tasks \
+            --cluster default \
+            --family "${{ steps.slug.outputs.task_family }}" \
+            --query 'taskArns' --output json 2>/dev/null || echo "[]")
 
-          if aws ecs describe-express-gateway-service --service-arn "$ARN" 2>/dev/null; then
-            echo "Deleting service: ${{ steps.slug.outputs.service }}"
-            aws ecs delete-express-gateway-service --service-arn "$ARN"
-            echo "Service deletion initiated"
+          if [ "$TASKS" != "[]" ] && [ -n "$TASKS" ]; then
+            echo "$TASKS" | jq -r '.[]' | while read -r TASK_ARN; do
+              echo "Stopping task: $TASK_ARN"
+              aws ecs stop-task --cluster default --task "$TASK_ARN" --reason "Preview teardown" > /dev/null
+            done
           else
-            echo "No service found for ${{ steps.slug.outputs.service }} — skipping"
+            echo "No running tasks found for ${{ steps.slug.outputs.task_family }} — skipping"
           fi
 
-      # ── Remove Cloudflare KV entry ───────────────────────────
+      # ── Deregister task definitions ───────────────────────────
+      - name: Deregister task definitions
+        run: |
+          TASK_DEFS=$(aws ecs list-task-definitions \
+            --family-prefix "${{ steps.slug.outputs.task_family }}" \
+            --query 'taskDefinitionArns' --output json 2>/dev/null || echo "[]")
+
+          if [ "$TASK_DEFS" != "[]" ] && [ -n "$TASK_DEFS" ]; then
+            echo "$TASK_DEFS" | jq -r '.[]' | while read -r ARN; do
+              aws ecs deregister-task-definition --task-definition "$ARN" > /dev/null
+              echo "Deregistered: $ARN"
+            done
+          fi
+
+      # ── Remove Cloudflare KV entry ────────────────────────────
       - name: Remove preview from Cloudflare KV
         env:
           CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
@@ -65,30 +82,9 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN"
 
-      # ── Clean up ECR images ──────────────────────────────────
-      - name: Clean up ECR images
-        run: |
-          REPO="preview/${{ github.event.repository.name }}"
-          SLUG="${{ steps.slug.outputs.branch_slug }}"
-
-          IMAGES=$(aws ecr list-images \
-            --repository-name "$REPO" \
-            --query "imageIds[?starts_with(imageTag, '${SLUG}-')]" \
-            --output json 2>/dev/null || echo "[]")
-
-          if [ "$IMAGES" != "[]" ] && [ -n "$IMAGES" ]; then
-            echo "Deleting images for slug $SLUG from $REPO"
-            aws ecr batch-delete-image \
-              --repository-name "$REPO" \
-              --image-ids "$IMAGES" || true
-          else
-            echo "No images found for slug $SLUG — skipping"
-          fi
-
       - name: Summary
         run: |
           echo "## Teardown Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Service: \`${{ steps.slug.outputs.service }}\` — deleted" >> $GITHUB_STEP_SUMMARY
-          echo "- Preview URL: removed from KV (\`${{ steps.slug.outputs.kv_key }}\`)" >> $GITHUB_STEP_SUMMARY
-          echo "- Images: cleaned up" >> $GITHUB_STEP_SUMMARY
+          echo "- Tasks stopped for family: \`${{ steps.slug.outputs.task_family }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Preview URL removed from KV: \`${{ steps.slug.outputs.kv_key }}\`" >> $GITHUB_STEP_SUMMARY

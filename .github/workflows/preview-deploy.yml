@@ -20,12 +20,13 @@ jobs:
         id: cfg
         run: |
           echo "php=$(jq -r .php .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "stack=$(jq -r .stack .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "build=$(jq -r '.preview.build // "generic"' .claude/project.json)" >> $GITHUB_OUTPUT
           echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
           echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
           echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "infrastructure_role_arn=$(jq -r .preview.aws.infrastructure_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -36,11 +37,6 @@ jobs:
       - name: Derive names
         id: slug
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          REGION="${{ steps.cfg.outputs.region }}"
-          REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-          REPO_NAME="preview/${{ github.event.repository.name }}"
-
           REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           BRANCH_SLUG=$(echo "$REF" \
             | tr '[:upper:]' '[:lower:]' \
@@ -55,30 +51,25 @@ jobs:
 
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
           echo "kv_key=$KV_KEY" >> $GITHUB_OUTPUT
-          echo "preview_url=https://${KV_KEY}.${{ steps.cfg.outputs.domain }}" >> $GITHUB_OUTPUT
-          echo "service=preview-$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
-          echo "repo=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "image=$REGISTRY/$REPO_NAME:$BRANCH_SLUG-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
-          echo "image_latest=$REGISTRY/$REPO_NAME:$BRANCH_SLUG-latest" >> $GITHUB_OUTPUT
+          echo "task_family=preview-${BRANCH_SLUG}" >> $GITHUB_OUTPUT
 
-      # ── Build & Push to ECR ──────────────────────────────────
-      - name: Ensure ECR repository exists
-        run: |
-          aws ecr describe-repositories \
-            --repository-names "${{ steps.slug.outputs.repo }}" 2>/dev/null \
-          || aws ecr create-repository \
-            --repository-name "${{ steps.slug.outputs.repo }}" \
-            --image-scanning-configuration scanOnPush=false
-
+      # ── Build image (dockerfile projects only) ───────────────
       - name: Log in to ECR
+        if: steps.cfg.outputs.build == 'dockerfile'
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Check if image already exists
+      - name: Derive image name
+        if: steps.cfg.outputs.build == 'dockerfile'
         id: image
         run: |
-          if aws ecr describe-images \
-            --repository-name "${{ steps.slug.outputs.repo }}" \
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.${{ steps.cfg.outputs.region }}.amazonaws.com"
+          REPO="preview/${{ github.event.repository.name }}"
+          aws ecr describe-repositories --repository-names "$REPO" 2>/dev/null \
+            || aws ecr create-repository --repository-name "$REPO" --image-scanning-configuration scanOnPush=false
+          IMAGE="$REGISTRY/$REPO:${{ steps.slug.outputs.branch_slug }}-${GITHUB_SHA::8}"
+          echo "uri=$IMAGE" >> $GITHUB_OUTPUT
+          if aws ecr describe-images --repository-name "$REPO" \
             --image-ids imageTag="${{ steps.slug.outputs.branch_slug }}-${GITHUB_SHA::8}" \
             2>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
@@ -87,119 +78,175 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        if: steps.image.outputs.exists == 'false'
+        if: steps.cfg.outputs.build == 'dockerfile' && steps.image.outputs.exists == 'false'
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
-        if: steps.image.outputs.exists == 'false'
+        if: steps.cfg.outputs.build == 'dockerfile' && steps.image.outputs.exists == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ steps.slug.outputs.image }}
-            ${{ steps.slug.outputs.image_latest }}
+          tags: ${{ steps.image.outputs.uri }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             PHP_VERSION=${{ steps.cfg.outputs.php }}
 
-      # ── ECS Express ──────────────────────────────────────────
-      - name: Check if service exists
-        id: svc
+      # ── Resolve image URI ─────────────────────────────────────
+      - name: Resolve image URI
+        id: resolved
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ARN="arn:aws:ecs:${{ steps.cfg.outputs.region }}:${ACCOUNT_ID}:service/default/${{ steps.slug.outputs.service }}"
-          STATUS=$(aws ecs describe-express-gateway-service --service-arn "$ARN" \
-            --query 'service.status.statusCode' --output text 2>/dev/null || echo "NOT_FOUND")
-          echo "Service status: $STATUS"
-          if [ "$STATUS" = "NOT_FOUND" ] || [ "$STATUS" = "None" ]; then
-            echo "exists=false" >> $GITHUB_OUTPUT
-          elif [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "INACTIVE" ]; then
-            echo "Service is in terminal failure state ($STATUS), deleting and recreating..."
-            aws ecs delete-express-gateway-service --service-arn "$ARN" || true
-            echo "exists=false" >> $GITHUB_OUTPUT
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.${{ steps.cfg.outputs.region }}.amazonaws.com"
+          if [ "${{ steps.cfg.outputs.build }}" = "dockerfile" ]; then
+            echo "image=${{ steps.image.outputs.uri }}" >> $GITHUB_OUTPUT
           else
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "arn=$ARN" >> $GITHUB_OUTPUT
+            echo "image=${REGISTRY}/reckless/php:${{ steps.cfg.outputs.php }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create ECS Express service
-        if: steps.svc.outputs.exists == 'false'
-        id: create
+      # ── Check for running task (git pull fast path) ───────────
+      - name: Check for running task
+        id: task
         run: |
-          ARN=$(aws ecs create-express-gateway-service \
-            --service-name "${{ steps.slug.outputs.service }}" \
-            --execution-role-arn "${{ steps.cfg.outputs.execution_role_arn }}" \
-            --infrastructure-role-arn "${{ steps.cfg.outputs.infrastructure_role_arn }}" \
-            --primary-container "{
-              \"image\": \"${{ steps.slug.outputs.image }}\",
-              \"containerPort\": 80,
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster default \
+            --family "${{ steps.slug.outputs.task_family }}" \
+            --desired-status RUNNING \
+            --query 'taskArns[0]' --output text 2>/dev/null || echo "None")
+
+          if [ "$TASK_ARN" != "None" ] && [ -n "$TASK_ARN" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "arn=$TASK_ARN" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Fast path: git pull in running container ──────────────
+      - name: Update running container (git pull)
+        if: steps.task.outputs.exists == 'true'
+        run: |
+          aws ecs execute-command \
+            --cluster default \
+            --task "${{ steps.task.outputs.arn }}" \
+            --container app \
+            --command "/bin/sh -c 'cd /var/www/html && git pull && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache'" \
+            --interactive
+
+      # ── Slow path: launch new task ────────────────────────────
+      - name: Register task definition
+        if: steps.task.outputs.exists == 'false'
+        id: taskdef
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --family "${{ steps.slug.outputs.task_family }}" \
+            --network-mode awsvpc \
+            --requires-compatibilities FARGATE \
+            --cpu 256 \
+            --memory 512 \
+            --execution-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-execution" \
+            --container-definitions "[{
+              \"name\": \"app\",
+              \"image\": \"${{ steps.resolved.outputs.image }}\",
+              \"portMappings\": [{\"containerPort\": 80, \"protocol\": \"tcp\"}],
+              \"enableExecuteCommand\": true,
               \"environment\": [
                 {\"name\": \"APP_ENV\", \"value\": \"preview\"},
                 {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
-                {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
-              ]
+                {\"name\": \"APP_URL\", \"value\": \"https://${{ steps.slug.outputs.kv_key }}.${{ steps.cfg.outputs.domain }}\"},
+                {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
+                {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
+                {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
+                {\"name\": \"GITHUB_TOKEN\", \"value\": \"${{ secrets.PREVIEWS_GITHUB_TOKEN }}\"}
+              ],
+              \"logConfiguration\": {
+                \"logDriver\": \"awslogs\",
+                \"options\": {
+                  \"awslogs-group\": \"/ecs/preview\",
+                  \"awslogs-region\": \"${{ steps.cfg.outputs.region }}\",
+                  \"awslogs-stream-prefix\": \"ecs\",
+                  \"awslogs-create-group\": \"true\"
+                }
+              }
+            }]" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Run task
+        if: steps.task.outputs.exists == 'false'
+        id: run
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster default \
+            --launch-type FARGATE \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --network-configuration "awsvpcConfiguration={
+              subnets=[subnet-60a76a09,subnet-2c73a757,subnet-62ac422f],
+              securityGroups=[sg-0d773f640262948ac],
+              assignPublicIp=ENABLED
             }" \
-            --query 'service.serviceArn' \
-            --output text)
-          echo "arn=$ARN" >> $GITHUB_OUTPUT
+            --enable-execute-command \
+            --query 'tasks[0].taskArn' --output text)
+          echo "arn=$TASK_ARN" >> $GITHUB_OUTPUT
 
-      - name: Update ECS Express service
-        if: steps.svc.outputs.exists == 'true'
+      # ── Get public IP ─────────────────────────────────────────
+      - name: Wait for public IP
+        if: steps.task.outputs.exists == 'false'
+        id: ip
         run: |
-          aws ecs update-express-gateway-service \
-            --service-arn "${{ steps.svc.outputs.arn }}" \
-            --primary-container "{
-              \"image\": \"${{ steps.slug.outputs.image }}\",
-              \"containerPort\": 80,
-              \"environment\": [
-                {\"name\": \"APP_ENV\", \"value\": \"preview\"},
-                {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
-                {\"name\": \"APP_URL\", \"value\": \"${{ steps.slug.outputs.preview_url }}\"}
-              ]
-            }"
+          TASK_ARN="${{ steps.run.outputs.arn }}"
+          echo "Waiting for task to get a public IP..."
+          for i in $(seq 1 30); do
+            ENI=$(aws ecs describe-tasks \
+              --cluster default --tasks "$TASK_ARN" \
+              --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" \
+              --output text 2>/dev/null)
 
-      - name: Wait for service to be active
-        id: wait
-        run: |
-          SERVICE_ARN="${{ steps.create.outputs.arn || steps.svc.outputs.arn }}"
-          echo "Waiting for $SERVICE_ARN to be ACTIVE..."
-          for i in $(seq 1 120); do
-            STATUS=$(aws ecs describe-express-gateway-service \
-              --service-arn "$SERVICE_ARN" \
-              --query 'service.status.statusCode' \
-              --output text)
-            echo "  Status: $STATUS (attempt $i/120)"
-            if [ "$STATUS" = "ACTIVE" ]; then
-              SERVICE_URL=$(aws ecs describe-express-gateway-service \
-                --service-arn "$SERVICE_ARN" \
-                --query 'service.activeConfigurations[0].ingressPaths[0].endpoint' \
-                --output text)
-              echo "Service ACTIVE, waiting for ingress to respond at $SERVICE_URL..."
-              for j in $(seq 1 30); do
-                if curl -sf --max-time 5 "https://$SERVICE_URL/up" > /dev/null 2>&1; then
-                  echo "Ingress is responding"
-                  echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
-                  break 2
-                fi
-                echo "  Ingress not ready yet (attempt $j/30)"
-                sleep 10
-              done
-              echo "Timed out waiting for ingress to respond"
-              exit 1
+            if [ -n "$ENI" ] && [ "$ENI" != "None" ]; then
+              PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+                --network-interface-ids "$ENI" \
+                --query 'NetworkInterfaces[0].Association.PublicIp' \
+                --output text 2>/dev/null)
+
+              if [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "None" ]; then
+                echo "Public IP: $PUBLIC_IP"
+                echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+                break
+              fi
             fi
-            if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ] || [ "$STATUS" = "INACTIVE" ]; then
-              echo "Service failed with status: $STATUS"
-              exit 1
-            fi
+
+            echo "  Waiting... (attempt $i/30)"
             sleep 10
           done
-          echo "Timed out waiting for service to become ACTIVE"
-          exit 1
 
-      # ── Cloudflare KV ─────────────────────────────────────────
+          if [ -z "$(grep public_ip $GITHUB_OUTPUT 2>/dev/null | cut -d= -f2)" ]; then
+            echo "Timed out waiting for public IP"
+            exit 1
+          fi
+
+      # ── Wait for app to respond ───────────────────────────────
+      - name: Wait for app to respond
+        if: steps.task.outputs.exists == 'false'
+        run: |
+          IP="${{ steps.ip.outputs.public_ip }}"
+          echo "Waiting for app to respond at http://$IP/up..."
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 5 "http://$IP/up" > /dev/null 2>&1; then
+              echo "App is responding"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "Timed out waiting for app to respond"
+              exit 1
+            fi
+            echo "  Not ready yet (attempt $i/60)"
+            sleep 10
+          done
+
+      # ── Write to Cloudflare KV ────────────────────────────────
       - name: Register preview in Cloudflare KV
+        if: steps.task.outputs.exists == 'false'
         env:
           CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
         run: |
@@ -207,15 +254,17 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/1bb0fc32aa594b6497860018ef198dbd/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: text/plain" \
-            --data "https://${{ steps.wait.outputs.service_url }}"
+            --data "http://${{ steps.ip.outputs.public_ip }}"
 
-      # ── Summary ──────────────────────────────────────────────
+      # ── Post PR comment ───────────────────────────────────────
       - name: Post preview URL
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const url = '${{ steps.slug.outputs.preview_url }}';
+            const slug = '${{ steps.slug.outputs.kv_key }}';
+            const domain = '${{ steps.cfg.outputs.domain }}';
+            const url = `https://${slug}.${domain}`;
             const body = [
               '## Preview Environment',
               '',
