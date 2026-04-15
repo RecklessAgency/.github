@@ -158,7 +158,7 @@ jobs:
                 {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
                 {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
                 {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
-                {\"name\": \"GITHUB_TOKEN\", \"value\": \"${{ secrets.PREVIEWS_GITHUB_TOKEN }}\"}
+                {\"name\": \"DEPLOY_KEY\", \"value\": \"$(base64 -w0 docker/preview-deploy-key 2>/dev/null || true)\"}
               ],
               \"logConfiguration\": {
                 \"logDriver\": \"awslogs\",

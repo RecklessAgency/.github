@@ -3,9 +3,19 @@ set -e
 
 # ── Clone repo ────────────────────────────────────────────────
 echo "Cloning ${REPO_ORG}/${REPO_NAME} (branch: ${BRANCH})..."
-git clone --depth=1 --branch="${BRANCH}" \
-    "https://${GITHUB_TOKEN}@github.com/${REPO_ORG}/${REPO_NAME}.git" \
-    /var/www/html
+
+# Set up SSH deploy key if provided (base64-encoded in DEPLOY_KEY env var)
+if [ -n "$DEPLOY_KEY" ]; then
+    mkdir -p /root/.ssh
+    echo "$DEPLOY_KEY" | base64 -d > /root/.ssh/deploy-key
+    chmod 600 /root/.ssh/deploy-key
+    printf "Host github.com\n  IdentityFile /root/.ssh/deploy-key\n  StrictHostKeyChecking no\n" > /root/.ssh/config
+    GIT_URL="git@github.com:${REPO_ORG}/${REPO_NAME}.git"
+else
+    GIT_URL="https://${GITHUB_TOKEN}@github.com/${REPO_ORG}/${REPO_NAME}.git"
+fi
+
+git clone --depth=1 --branch="${BRANCH}" "${GIT_URL}" /var/www/html
 cd /var/www/html
 
 # ── PHP dependencies ──────────────────────────────────────────
