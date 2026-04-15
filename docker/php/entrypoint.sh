@@ -34,8 +34,10 @@ php artisan package:discover --ansi 2>/dev/null || true
 # If docker/preview-db-init.sh exists, start a local MySQL and run it.
 # Projects that don't need a local DB simply omit this file.
 if [ -f docker/preview-db-init.sh ]; then
-    mkdir -p /var/lib/mysql /run/mysqld
-    chown -R mysql:mysql /var/lib/mysql /run/mysqld
+    mkdir -p /var/lib/mysql
+    mkdir -p /var/run/mysqld
+    ln -sf /var/run/mysqld /run/mysqld 2>/dev/null || true
+    chown -R mysql:mysql /var/lib/mysql /var/run/mysqld
 
     if [ ! -d /var/lib/mysql/mysql ]; then
         mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
