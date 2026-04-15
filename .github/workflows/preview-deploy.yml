@@ -28,6 +28,7 @@ jobs:
           echo "instance_role_arn=$(jq -r .preview.aws.instance_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "db_create_script=$(jq -r '.preview.db_create_script // empty' .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -100,6 +101,25 @@ jobs:
             -u "${{ steps.cfg.outputs.db_username }}" \
             -p"${{ secrets.PREVIEWS_DB_PASSWORD }}" \
             -e "CREATE DATABASE IF NOT EXISTS \`${{ steps.slug.outputs.db }}\`"
+
+      - name: Run database create script
+        if: steps.cfg.outputs.db_create_script != ''
+        env:
+          DB_HOST: ${{ steps.cfg.outputs.db_host }}
+          DB_NAME: ${{ steps.slug.outputs.db }}
+          DB_USERNAME: ${{ steps.cfg.outputs.db_username }}
+          DB_PASSWORD: ${{ secrets.PREVIEWS_DB_PASSWORD }}
+        run: |
+          TABLE_COUNT=$(mysql -h "$DB_HOST" -u "$DB_USERNAME" -p"$DB_PASSWORD" \
+            -s -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME'")
+          echo "Existing tables: $TABLE_COUNT"
+          if [ "$TABLE_COUNT" = "0" ]; then
+            echo "Running ${{ steps.cfg.outputs.db_create_script }}..."
+            chmod +x "${{ steps.cfg.outputs.db_create_script }}"
+            bash "${{ steps.cfg.outputs.db_create_script }}"
+          else
+            echo "Database already has tables, skipping."
+          fi
 
       # ── App Runner ───────────────────────────────────────────
       - name: Check if service exists
