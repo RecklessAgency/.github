@@ -290,7 +290,7 @@ jobs:
         if: steps.task.outputs.exists == 'false'
         env:
           CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.PREVIEWS_CLOUDFLARE_ZONE_ID }}
+          CF_ZONE_ID: ebad49274edc8f01b668fffbf8ae15d5
         run: |
           HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
           PUBLIC_IP="${{ steps.ip.outputs.public_ip }}"
