@@ -176,8 +176,18 @@ jobs:
                 --service-arn "$SERVICE_ARN" \
                 --query 'service.activeConfigurations[0].ingressPaths[0].endpoint' \
                 --output text)
-              echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
-              break
+              echo "Service ACTIVE, waiting for ingress to respond at $SERVICE_URL..."
+              for j in $(seq 1 30); do
+                if curl -sf --max-time 5 "https://$SERVICE_URL/up" > /dev/null 2>&1; then
+                  echo "Ingress is responding"
+                  echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
+                  break 2
+                fi
+                echo "  Ingress not ready yet (attempt $j/30)"
+                sleep 10
+              done
+              echo "Timed out waiting for ingress to respond"
+              exit 1
             fi
             if [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "UPDATE_FAILED" ] || [ "$STATUS" = "INACTIVE" ]; then
               echo "Service failed with status: $STATUS"
@@ -185,6 +195,8 @@ jobs:
             fi
             sleep 10
           done
+          echo "Timed out waiting for service to become ACTIVE"
+          exit 1
 
       # ── Cloudflare KV ─────────────────────────────────────────
       - name: Register preview in Cloudflare KV
