@@ -28,7 +28,6 @@ jobs:
           echo "instance_role_arn=$(jq -r .preview.aws.instance_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_host=$(jq -r .preview.aws.db_host .claude/project.json)" >> $GITHUB_OUTPUT
           echo "db_username=$(jq -r .preview.aws.db_username .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "cf_account_id=$(jq -r .preview.cloudflare.account_id .claude/project.json)" >> $GITHUB_OUTPUT
           echo "cf_kv_namespace_id=$(jq -r .preview.cloudflare.kv_namespace_id .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
@@ -224,7 +223,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           curl -s -X PUT \
-            "https://api.cloudflare.com/client/v4/accounts/${{ steps.cfg.outputs.cf_account_id }}/storage/kv/namespaces/${{ steps.cfg.outputs.cf_kv_namespace_id }}/values/${{ steps.slug.outputs.kv_key }}" \
+            "https://api.cloudflare.com/client/v4/accounts/96100875197cbb8ace4524aaf242af17/storage/kv/namespaces/${{ steps.cfg.outputs.cf_kv_namespace_id }}/values/${{ steps.slug.outputs.kv_key }}" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: text/plain" \
             --data "https://${{ steps.wait.outputs.runner_url }}"
