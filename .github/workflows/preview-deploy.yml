@@ -145,7 +145,7 @@ jobs:
             --cluster default \
             --task "${{ steps.task.outputs.arn }}" \
             --container app \
-            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache'" \
+            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && [ -f .preview-env ] && . ./.preview-env; php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force'" \
             --interactive
 
       # ── Build assets (s3-cached mode) ────────────────────────
@@ -194,16 +194,25 @@ jobs:
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-          # Build environment array — always include base vars, conditionally add ASSETS_URL
+          # Build environment array — infrastructure/dynamic vars always set
+          PREVIEW_HOST="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
           ENV_VARS="[
-            {\"name\": \"APP_ENV\", \"value\": \"preview\"},
             {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
-            {\"name\": \"APP_URL\", \"value\": \"http://${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}\"},
+            {\"name\": \"APP_URL\", \"value\": \"https://${PREVIEW_HOST}\"},
+            {\"name\": \"SESSION_DOMAIN\", \"value\": \"${PREVIEW_HOST}\"},
             {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
             {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
             {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
             {\"name\": \"DEPLOY_KEY\", \"value\": \"$(base64 -w0 docker/preview-deploy-key 2>/dev/null || true)\"}
           ]"
+
+          # Merge project-specific env vars from docker/preview.env if present
+          if [ -f docker/preview.env ]; then
+            while IFS='=' read -r key value || [ -n "$key" ]; do
+              [ -z "$key" ] || [ "${key#\#}" != "$key" ] && continue
+              ENV_VARS=$(echo "$ENV_VARS" | jq --arg k "$key" --arg v "$value" '. + [{"name": $k, "value": $v}]')
+            done < docker/preview.env
+          fi
 
           ASSETS_URL="${{ steps.assets.outputs.url }}"
           if [ -n "$ASSETS_URL" ]; then
@@ -362,7 +371,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":60,\"proxied\":false}" \
+            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true}" \
             | jq -r 'if .success then "DNS record created: \(.result.name) → \(.result.content)" else "ERROR: \(.errors)" end'
 
       # ── Post PR comment ───────────────────────────────────────

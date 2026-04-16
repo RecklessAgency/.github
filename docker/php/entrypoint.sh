@@ -44,37 +44,40 @@ if [ -f docker/preview-db-init.sh ]; then
         sleep 1
     done
 
+    # Source (not sh) so DB_* exports from the init script propagate here
     . docker/preview-db-init.sh
-
-    export DB_HOST=localhost
-    export DB_SOCKET=/var/run/mysqld/mysqld.sock
-    export DB_USERNAME=root
-    export DB_PASSWORD=
 fi
 
 # ── Preview defaults ──────────────────────────────────────────
 export CACHE_DRIVER=${CACHE_DRIVER:-file}
+export CACHE_QUERY_STORE=${CACHE_QUERY_STORE:-file}
 export SESSION_DRIVER=${SESSION_DRIVER:-file}
 export QUEUE_CONNECTION=${QUEUE_CONNECTION:-sync}
+export LOG_CHANNEL=${LOG_CHANNEL:-stderr}
 export APP_KEY=${APP_KEY:-$(php -r 'echo "base64:".base64_encode(random_bytes(32));')}
+
+# ── Write resolved env to file for fast-path config:cache ─────
+printenv | grep -E '^(APP_|DB_|CACHE_|SESSION_|QUEUE_|BROADCAST_|LOG_)' \
+    | sed 's/^/export /' > /var/www/html/.preview-env
 
 # ── Start ─────────────────────────────────────────────────────
 if [ -f artisan ]; then
-    php artisan config:cache
-    php artisan route:cache
-    php artisan view:cache
-    php artisan migrate --force
-    php artisan db:seed --force 2>/dev/null || true
-
     # ── JS dependencies & assets ──────────────────────────────
+    # Assets must be present before view:cache so mix() calls resolve correctly
     if [ -n "$ASSETS_URL" ]; then
         echo "Downloading pre-built assets..."
-        curl -fsSL "$ASSETS_URL" | tar -xz -C /var/www/html/public
+        curl -fsSL "$ASSETS_URL" | tar -xz -C /var/www/html
     elif [ -f package.json ]; then
         npm ci
         npm run production 2>/dev/null || npm run build 2>/dev/null || true
         rm -rf node_modules
     fi
+
+    php artisan config:cache
+    php artisan route:cache
+    php artisan view:cache
+    php artisan migrate --force
+    php artisan db:seed --force 2>/dev/null || true
 
     # ── Fix ownership for PHP-FPM (serversideup image runs as webuser uid 9999) ──
     chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
