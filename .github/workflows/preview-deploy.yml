@@ -41,6 +41,7 @@ jobs:
           echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "assets=$(jq -r '.preview.assets // ""' .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -147,12 +148,68 @@ jobs:
             --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache'" \
             --interactive
 
+      # ── Build assets (s3-cached mode) ────────────────────────
+      # Projects opt in via "assets": "s3-cached" in project.json.
+      # The project must provide docker/preview-assets.sh which builds assets
+      # and writes them to /tmp/assets.tar.gz. The hash key is computed from
+      # that script's content + any files it lists on the first line as:
+      #   # hash-inputs: file1 file2 ...
+      # If no hash-inputs comment is present, the script itself is the key.
+      - name: Build and cache assets
+        if: steps.cfg.outputs.assets == 's3-cached'
+        id: assets
+        run: |
+          SCRIPT="docker/preview-assets.sh"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "ERROR: assets=s3-cached but $SCRIPT not found"
+            exit 1
+          fi
+
+          # Compute hash: script content + files/dirs listed in "# hash-inputs:" comment
+          HASH_INPUTS=$(grep -m1 '^# hash-inputs:' "$SCRIPT" | sed 's/^# hash-inputs://' || true)
+          ASSET_HASH=$( { cat "$SCRIPT"; find ${HASH_INPUTS} -type f 2>/dev/null | sort | xargs cat 2>/dev/null; } | sha256sum | cut -c1-16)
+          S3_KEY="assets/${{ github.event.repository.name }}/${ASSET_HASH}.tar.gz"
+          BUCKET="r3-preview-assets"
+
+          if aws s3api head-object --bucket "$BUCKET" --key "$S3_KEY" 2>/dev/null; then
+            echo "Cache hit: $S3_KEY"
+          else
+            echo "Cache miss — building assets..."
+            bash "$SCRIPT"
+            if [ ! -f /tmp/assets.tar.gz ]; then
+              echo "ERROR: $SCRIPT did not produce /tmp/assets.tar.gz"
+              exit 1
+            fi
+            aws s3 cp /tmp/assets.tar.gz "s3://${BUCKET}/${S3_KEY}"
+            echo "Uploaded to s3://${BUCKET}/${S3_KEY}"
+          fi
+
+          PRESIGNED_URL=$(aws s3 presign "s3://${BUCKET}/${S3_KEY}" --expires-in 3600)
+          echo "url=$PRESIGNED_URL" >> $GITHUB_OUTPUT
+
       # ── Slow path: launch new task ────────────────────────────
       - name: Register task definition
         if: steps.task.outputs.exists == 'false'
         id: taskdef
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # Build environment array — always include base vars, conditionally add ASSETS_URL
+          ENV_VARS="[
+            {\"name\": \"APP_ENV\", \"value\": \"preview\"},
+            {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
+            {\"name\": \"APP_URL\", \"value\": \"http://${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}\"},
+            {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
+            {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
+            {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
+            {\"name\": \"DEPLOY_KEY\", \"value\": \"$(base64 -w0 docker/preview-deploy-key 2>/dev/null || true)\"}
+          ]"
+
+          ASSETS_URL="${{ steps.assets.outputs.url }}"
+          if [ -n "$ASSETS_URL" ]; then
+            ENV_VARS=$(echo "$ENV_VARS" | jq --arg url "$ASSETS_URL" '. + [{"name": "ASSETS_URL", "value": $url}]')
+          fi
+
           TASK_DEF_ARN=$(aws ecs register-task-definition \
             --family "${{ steps.slug.outputs.task_family }}" \
             --network-mode awsvpc \
@@ -166,15 +223,7 @@ jobs:
               \"name\": \"app\",
               \"image\": \"${{ steps.resolved.outputs.image }}\",
               \"portMappings\": [{\"containerPort\": 80, \"protocol\": \"tcp\"}],
-              \"environment\": [
-                {\"name\": \"APP_ENV\", \"value\": \"preview\"},
-                {\"name\": \"APP_KEY\", \"value\": \"${{ secrets.PREVIEWS_APP_KEY }}\"},
-                {\"name\": \"APP_URL\", \"value\": \"http://${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}\"},
-                {\"name\": \"REPO_ORG\", \"value\": \"${{ github.repository_owner }}\"},
-                {\"name\": \"REPO_NAME\", \"value\": \"${{ github.event.repository.name }}\"},
-                {\"name\": \"BRANCH\", \"value\": \"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\"},
-                {\"name\": \"DEPLOY_KEY\", \"value\": \"$(base64 -w0 docker/preview-deploy-key 2>/dev/null || true)\"}
-              ],
+              \"environment\": $(echo "$ENV_VARS"),
               \"logConfiguration\": {
                 \"logDriver\": \"awslogs\",
                 \"options\": {

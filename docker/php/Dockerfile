@@ -6,6 +6,8 @@ COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr
 
 USER root
 
+ENV NGINX_HTTP_PORT=80
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client mariadb-client mariadb-server curl \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \

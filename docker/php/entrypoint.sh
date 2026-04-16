@@ -67,7 +67,10 @@ if [ -f artisan ]; then
     php artisan db:seed --force 2>/dev/null || true
 
     # ── JS dependencies & assets ──────────────────────────────
-    if [ -f package.json ]; then
+    if [ -n "$ASSETS_URL" ]; then
+        echo "Downloading pre-built assets..."
+        curl -fsSL "$ASSETS_URL" | tar -xz -C /var/www/html/public
+    elif [ -f package.json ]; then
         npm ci
         npm run production 2>/dev/null || npm run build 2>/dev/null || true
         rm -rf node_modules
