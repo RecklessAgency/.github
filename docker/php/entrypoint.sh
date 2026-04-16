@@ -79,6 +79,15 @@ if [ -f artisan ]; then
     php artisan migrate --force
     php artisan db:seed --force 2>/dev/null || true
 
+    # ── Project-specific post-provision hook ─────────────────────
+    # Runs after DB setup but before PHP-FPM starts. Good place for CMS
+    # bootstrap (folder skeletons, cache warming, search indexing).
+    # Sourced so any exports propagate. Projects omit the file if unused.
+    if [ -f docker/preview-post-provision.sh ]; then
+        echo "Running post-provision hook..."
+        . docker/preview-post-provision.sh
+    fi
+
     # ── Fix ownership for PHP-FPM (serversideup image runs as webuser uid 9999) ──
     chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
