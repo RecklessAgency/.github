@@ -14,15 +14,14 @@ Visitor (HTTPS) → Cloudflare Edge → Cloudflare Worker → Fargate task (HTTP
 ```
 
 - **Hosting**: AWS ECS Fargate `run-task` in a public subnet. No ALB — each task gets a public IP directly.
-- **Routing**: A Cloudflare Worker acts as the reverse proxy. On deploy, the workflow writes `http://{public-ip}` to a Cloudflare KV namespace under the key `{branch-slug}--{project-slug}`. The Worker looks up the key on each request and proxies to it. On teardown, the KV entry is removed.
-- **TLS**: Cloudflare terminates HTTPS for visitors. The Worker→container leg is plain HTTP over the public internet. Acceptable for preview environments (ephemeral, non-production data). For sensitive data, consider Cloudflare Tunnel with private subnets instead (requires a NAT gateway).
+- **Routing**: A Cloudflare A record is created on deploy and removed on teardown, using a `{branch-slug}--{project-slug}` subdomain.
+- **TLS**: Cloudflare terminates HTTPS for visitors. The CF→container leg is plain HTTP over the public internet. Acceptable for preview environments (ephemeral, non-production data). For sensitive data, consider Cloudflare Tunnel with private subnets instead (requires a NAT gateway).
 - **Container image**: The generic `reckless/php:{version}` ECR image is shared across all projects. At startup, the container clones the project repo using an SSH deploy key (passed base64-encoded as `DEPLOY_KEY`), runs `composer install` + `npm build`, migrates, and serves via `php artisan serve`.
 - **Deploy key**: An ed25519 key committed to each project repo at `docker/preview-deploy-key`. GitHub Actions reads and base64-encodes it into the Fargate task environment. Read-only, no expiry.
-- **DNS**: `*.rnmtest.co.uk` wildcard A record (proxied) → Cloudflare Worker route `*.rnmtest.co.uk/*`.
 
 #### Triggering
 
-Add the `preview` label to a PR → deploy. Remove the label or close the PR → teardown.
+Add the `preview` label to a PR → deploy. Close the PR (with the label) → teardown.
 
 Preview URL format: `https://{branch-slug}--{project-slug}.rnmtest.co.uk`
 
