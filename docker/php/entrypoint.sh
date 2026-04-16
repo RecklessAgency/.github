@@ -49,6 +49,11 @@ if [ -f docker/preview-db-init.sh ]; then
 fi
 
 # ── Preview defaults ──────────────────────────────────────────
+# Previews are private, short-lived, dev-facing — default to local/debug
+# so developers see actual stack traces instead of generic 500s. Projects
+# can still override via preview.env / task definition env vars.
+export APP_ENV=${APP_ENV:-development}
+export APP_DEBUG=${APP_DEBUG:-true}
 export CACHE_DRIVER=${CACHE_DRIVER:-file}
 export CACHE_QUERY_STORE=${CACHE_QUERY_STORE:-file}
 export SESSION_DRIVER=${SESSION_DRIVER:-file}
