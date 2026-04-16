@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && install-php-extensions intl bcmath zip gd exif redis
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+    && printf "[www]\nuser = www-data\ngroup = www-data\n" > /usr/local/etc/php-fpm.d/zzz-user-override.conf
 
 EXPOSE 80
 

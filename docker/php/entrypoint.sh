@@ -16,6 +16,7 @@ else
 fi
 
 git clone --depth=1 --branch="${BRANCH}" "${GIT_URL}" /var/www/html
+git config --global --add safe.directory /var/www/html
 cd /var/www/html
 
 # ── PHP dependencies ──────────────────────────────────────────
@@ -33,13 +34,13 @@ if [ -f docker/preview-db-init.sh ]; then
     chown -R mysql:mysql /var/lib/mysql /var/run/mysqld
 
     if [ ! -d /var/lib/mysql/mysql ]; then
-        mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
     fi
 
-    mysqld_safe --user=mysql --skip-networking=0 --log-error=/dev/stderr &
+    mariadbd-safe --user=mysql --skip-networking=0 --log-error=/var/lib/mysql/mysqld.err &
 
     echo "Waiting for MySQL..."
-    until mysqladmin ping --silent 2>/dev/null; do
+    until mariadb-admin ping --silent 2>/dev/null; do
         sleep 1
     done
 
@@ -72,7 +73,10 @@ if [ -f artisan ]; then
         rm -rf node_modules
     fi
 
-    exec /init
+    # ── Fix ownership for PHP-FPM (serversideup image runs as webuser uid 9999) ──
+    chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+
+    exec /usr/local/bin/docker-php-serversideup-entrypoint /init
 fi
 
 if [ -f docker/preview-start.sh ]; then
