@@ -79,13 +79,23 @@ if [ -f artisan ]; then
     php artisan migrate --force
     php artisan db:seed --force 2>/dev/null || true
 
-    # ── Project-specific post-provision hook ─────────────────────
-    # Runs after DB setup but before PHP-FPM starts. Good place for CMS
-    # bootstrap (folder skeletons, cache warming, search indexing).
-    # Sourced so any exports propagate. Projects omit the file if unused.
+    # ── Project-specific post-provision hook (cold start only) ───
+    # One-time bootstrap when the preview task is first provisioned.
+    # Good for folder skeletons, seed data, placeholder content.
+    # Sourced so exports propagate. Projects omit the file if unused.
     if [ -f docker/preview-post-provision.sh ]; then
         echo "Running post-provision hook..."
         . docker/preview-post-provision.sh
+    fi
+
+    # ── Project-specific post-deploy hook (every deploy) ─────────
+    # Runs on cold start and is replayed by preview-deploy.yml's
+    # fast-path git-pull. Good for cache clears, stache warming,
+    # translation compilation — anything that needs to re-run when
+    # code changes.
+    if [ -f docker/preview-post-deploy.sh ]; then
+        echo "Running post-deploy hook..."
+        . docker/preview-post-deploy.sh
     fi
 
     # ── Fix ownership for PHP-FPM (serversideup image runs as webuser uid 9999) ──

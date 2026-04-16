@@ -138,6 +138,10 @@ jobs:
           fi
 
       # ── Fast path: git pull in running container ──────────────
+      # Replays the "every deploy" steps inline: refresh code, re-cache
+      # config/routes/views, run migrations, and source the project-level
+      # post-deploy hook (cache clears, CMS warming, etc.). The cold-start
+      # post-provision hook is NOT replayed — it's one-time bootstrap.
       - name: Update running container (git pull)
         if: steps.task.outputs.exists == 'true'
         run: |
@@ -145,7 +149,7 @@ jobs:
             --cluster default \
             --task "${{ steps.task.outputs.arn }}" \
             --container app \
-            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && [ -f .preview-env ] && . ./.preview-env; php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force'" \
+            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && { [ -f .preview-env ] && . ./.preview-env; }; php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && { [ -f docker/preview-post-deploy.sh ] && . docker/preview-post-deploy.sh || true; }'" \
             --interactive
 
       # ── Build assets (s3-cached mode) ────────────────────────
