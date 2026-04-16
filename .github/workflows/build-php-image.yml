@@ -20,7 +20,7 @@ jobs:
 
     strategy:
       matrix:
-        php: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["{0}"]', inputs.php_version)) || fromJson('["8.4"]') }}
+        php: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["{0}"]', inputs.php_version)) || fromJson('["8.4", "8.3"]') }}
 
     steps:
       - name: Checkout
