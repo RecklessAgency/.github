@@ -277,6 +277,7 @@ jobs:
             --memory 2048 \
             --execution-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-execution" \
             --task-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ecs-preview-task" \
+            --tags key=purpose,value=preview key=preview-slug,value="${{ steps.slug.outputs.preview_key }}" \
             --container-definitions "[{
               \"name\": \"app\",
               \"image\": \"${{ steps.resolved.outputs.image }}\",
@@ -303,6 +304,7 @@ jobs:
             --cluster default \
             --launch-type FARGATE \
             --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --tags key=purpose,value=preview key=preview-slug,value="${{ steps.slug.outputs.preview_key }}" \
             --network-configuration "awsvpcConfiguration={
               subnets=[subnet-60a76a09,subnet-2c73a757,subnet-62ac422f],
               securityGroups=[sg-0d773f640262948ac],
