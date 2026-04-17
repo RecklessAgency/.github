@@ -34,8 +34,9 @@ jobs:
             | sed 's/-$//' \
             | cut -c1-50)
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
-          echo "preview_key=${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}" >> $GITHUB_OUTPUT
-          echo "task_family=preview-${BRANCH_SLUG}" >> $GITHUB_OUTPUT
+          PREVIEW_KEY="${BRANCH_SLUG}--${{ steps.cfg.outputs.project_slug }}"
+          echo "preview_key=$PREVIEW_KEY" >> $GITHUB_OUTPUT
+          echo "task_family=preview-${PREVIEW_KEY}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
