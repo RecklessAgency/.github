@@ -65,53 +65,50 @@ export APP_KEY=${APP_KEY:-$(php -r 'echo "base64:".base64_encode(random_bytes(32
 printenv | grep -E '^(APP_|DB_|CACHE_|SESSION_|QUEUE_|BROADCAST_|LOG_)' \
     | sed 's/^/export /' > /var/www/html/.preview-env
 
-# ── Start ─────────────────────────────────────────────────────
-if [ -f artisan ]; then
-    # ── JS dependencies & assets ──────────────────────────────
-    # Assets must be present before view:cache so mix() calls resolve correctly
-    if [ -n "$ASSETS_URL" ]; then
-        echo "Downloading pre-built assets..."
-        curl -fsSL "$ASSETS_URL" | tar -xz -C /var/www/html
-    elif [ -f package.json ]; then
-        npm ci
-        npm run production 2>/dev/null || npm run build 2>/dev/null || true
-        rm -rf node_modules
-    fi
+# ── JS dependencies & assets ──────────────────────────────────
+if [ -n "$ASSETS_URL" ]; then
+    echo "Downloading pre-built assets..."
+    curl -fsSL "$ASSETS_URL" | tar -xz -C /var/www/html
+elif [ -f package.json ]; then
+    npm ci
+    npm run production 2>/dev/null || npm run build 2>/dev/null || true
+    rm -rf node_modules
+fi
 
+# ── Post-provision hook (cold start only) ────────────────────
+if [ -f docker/preview-post-provision.sh ]; then
+    echo "Running post-provision hook..."
+    . docker/preview-post-provision.sh
+fi
+
+# ── Deploy commands ──────────────────────────────────────────
+# If the project provides docker/preview-deploy.sh, it owns all
+# framework-specific commands (caching, migrations, stache warming,
+# file ownership). Otherwise fall back to standard Laravel defaults.
+if [ -f docker/preview-deploy.sh ]; then
+    echo "Running project deploy script..."
+    . docker/preview-deploy.sh
+elif [ -f artisan ]; then
     php artisan config:cache
     php artisan route:cache
     php artisan view:cache
     php artisan migrate --force
     php artisan db:seed --force 2>/dev/null || true
-
-    # ── Project-specific post-provision hook (cold start only) ───
-    # One-time bootstrap when the preview task is first provisioned.
-    # Good for folder skeletons, seed data, placeholder content.
-    # Sourced so exports propagate. Projects omit the file if unused.
-    if [ -f docker/preview-post-provision.sh ]; then
-        echo "Running post-provision hook..."
-        . docker/preview-post-provision.sh
-    fi
-
-    # ── Project-specific post-deploy hook (every deploy) ─────────
-    # Runs on cold start and is replayed by preview-deploy.yml's
-    # fast-path git-pull. Good for cache clears, stache warming,
-    # translation compilation — anything that needs to re-run when
-    # code changes.
-    if [ -f docker/preview-post-deploy.sh ]; then
-        echo "Running post-deploy hook..."
-        . docker/preview-post-deploy.sh
-    fi
-
-    # ── Fix ownership for PHP-FPM (serversideup image runs as webuser uid 9999) ──
     chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+fi
 
+# ── Start ─────────────────────────────────────────────────────
+# The serversideup base image starts nginx + PHP-FPM and defaults
+# NGINX_WEBROOT to /var/www/html/public (Laravel convention).
+# Non-Laravel projects (e.g. Bedrock) override this via preview.env:
+#   NGINX_WEBROOT=/var/www/html/web
+# We start FPM for any project that has artisan OR provides a deploy
+# script. Projects that need a completely custom start use preview-start.sh.
+if [ -f artisan ] || [ -f docker/preview-deploy.sh ]; then
     exec /usr/local/bin/docker-php-serversideup-entrypoint /init
-fi
-
-if [ -f docker/preview-start.sh ]; then
+elif [ -f docker/preview-start.sh ]; then
     exec sh docker/preview-start.sh
+else
+    echo "ERROR: No known start command. Provide docker/preview-deploy.sh or docker/preview-start.sh."
+    exit 1
 fi
-
-echo "ERROR: No known start command. Provide docker/preview-start.sh for non-Laravel projects."
-exit 1

@@ -138,10 +138,9 @@ jobs:
           fi
 
       # ── Fast path: git pull in running container ──────────────
-      # Replays the "every deploy" steps inline: refresh code, re-cache
-      # config/routes/views, run migrations, and source the project-level
-      # post-deploy hook (cache clears, CMS warming, etc.). The cold-start
-      # post-provision hook is NOT replayed — it's one-time bootstrap.
+      # Pulls latest code and runs the project's deploy script if provided,
+      # otherwise falls back to standard Laravel artisan commands.
+      # The cold-start post-provision hook is NOT replayed — it's one-time.
       - name: Update running container (git pull)
         if: steps.task.outputs.exists == 'true'
         run: |
@@ -149,7 +148,7 @@ jobs:
             --cluster default \
             --task "${{ steps.task.outputs.arn }}" \
             --container app \
-            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && { [ -f .preview-env ] && . ./.preview-env; }; php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && { [ -f docker/preview-post-deploy.sh ] && . docker/preview-post-deploy.sh || true; }'" \
+            --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && { [ -f .preview-env ] && . ./.preview-env; }; if [ -f docker/preview-deploy.sh ]; then . docker/preview-deploy.sh; elif [ -f artisan ]; then php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force; fi'" \
             --interactive
 
       # ── Fast path: ensure DNS exists ─────────────────────────
