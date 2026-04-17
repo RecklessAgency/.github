@@ -152,6 +152,52 @@ jobs:
             --command "/bin/sh -c 'git config --global --add safe.directory /var/www/html && cd /var/www/html && git pull && { [ -f .preview-env ] && . ./.preview-env; }; php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && { [ -f docker/preview-post-deploy.sh ] && . docker/preview-post-deploy.sh || true; }'" \
             --interactive
 
+      # ── Fast path: ensure DNS exists ─────────────────────────
+      # If the first deploy failed its health check, DNS was never created.
+      # Check on every fast-path deploy and create it if missing — self-healing.
+      - name: Ensure DNS record (fast path)
+        if: steps.task.outputs.exists == 'true'
+        env:
+          CF_API_TOKEN: ${{ secrets.PREVIEWS_CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ebad49274edc8f01b668fffbf8ae15d5
+        run: |
+          HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
+
+          # Check if DNS record already exists
+          EXISTING=$(curl -s \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=A&name=${HOSTNAME}" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            | jq -r '.result[0].id // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "DNS record already exists for $HOSTNAME — nothing to do"
+            exit 0
+          fi
+
+          # Resolve the running task's public IP
+          ENI=$(aws ecs describe-tasks \
+            --cluster default --tasks "${{ steps.task.outputs.arn }}" \
+            --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" \
+            --output text 2>/dev/null)
+
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids "$ENI" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' \
+            --output text 2>/dev/null)
+
+          if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "None" ]; then
+            echo "Could not resolve public IP for task — skipping DNS"
+            exit 0
+          fi
+
+          echo "Creating missing DNS A record: $HOSTNAME → $PUBLIC_IP"
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true}" \
+            | jq -r 'if .success then "DNS record created: \(.result.name) → \(.result.content)" else "ERROR: \(.errors)" end'
+
       # ── Build assets (s3-cached mode) ────────────────────────
       # Projects opt in via "assets": "s3-cached" in project.json.
       # The project must provide docker/preview-assets.sh which builds assets
