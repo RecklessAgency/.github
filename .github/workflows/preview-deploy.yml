@@ -42,6 +42,7 @@ jobs:
           echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
           echo "assets=$(jq -r '.preview.assets // ""' .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "database_setup=$(jq -r '.preview.database_setup // "seed"' .claude/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -236,6 +237,24 @@ jobs:
           PRESIGNED_URL=$(aws s3 presign "s3://${BUCKET}/${S3_KEY}" --expires-in 3600)
           echo "url=$PRESIGNED_URL" >> $GITHUB_OUTPUT
 
+      # ── Generate DB snapshot URLs (backup mode) ──────────────
+      # Projects opt in via "database_setup": "backup" in project.json.
+      # Presigned URLs are generated so the container can pull from S3
+      # without needing its own IAM role for the assets bucket.
+      # Falls back to seeding silently if no snapshot exists yet.
+      - name: Generate DB snapshot URLs
+        if: steps.cfg.outputs.database_setup == 'backup'
+        id: db_backup
+        run: |
+          BUCKET=r3-preview-assets
+          PREFIX="db-snapshots/${{ steps.cfg.outputs.project_slug }}"
+          if aws s3api head-object --bucket "$BUCKET" --key "${PREFIX}/schema.sql.gz" 2>/dev/null; then
+            echo "schema_url=$(aws s3 presign s3://${BUCKET}/${PREFIX}/schema.sql.gz --expires-in 3600)" >> $GITHUB_OUTPUT
+            echo "data_url=$(aws s3 presign s3://${BUCKET}/${PREFIX}/data.sql.gz --expires-in 3600)" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: database_setup=backup but no snapshot found at s3://${BUCKET}/${PREFIX}/ — will fall back to seeding"
+          fi
+
       # ── Slow path: launch new task ────────────────────────────
       - name: Register task definition
         if: steps.task.outputs.exists == 'false'
@@ -266,6 +285,15 @@ jobs:
           ASSETS_URL="${{ steps.assets.outputs.url }}"
           if [ -n "$ASSETS_URL" ]; then
             ENV_VARS=$(echo "$ENV_VARS" | jq --arg url "$ASSETS_URL" '. + [{"name": "ASSETS_URL", "value": $url}]')
+          fi
+
+          SCHEMA_URL="${{ steps.db_backup.outputs.schema_url }}"
+          DATA_URL="${{ steps.db_backup.outputs.data_url }}"
+          if [ -n "$SCHEMA_URL" ] && [ -n "$DATA_URL" ]; then
+            ENV_VARS=$(echo "$ENV_VARS" | jq \
+              --arg schema "$SCHEMA_URL" \
+              --arg data "$DATA_URL" \
+              '. + [{"name": "DB_BACKUP_SCHEMA_URL", "value": $schema}, {"name": "DB_BACKUP_DATA_URL", "value": $data}]')
           fi
 
           TASK_DEF_ARN=$(aws ecs register-task-definition \

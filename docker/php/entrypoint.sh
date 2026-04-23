@@ -81,6 +81,26 @@ if [ -f docker/preview-post-provision.sh ]; then
     . docker/preview-post-provision.sh
 fi
 
+# ── Restore DB from nightly snapshot (if configured) ─────────
+# When a project sets database_setup=backup in .claude/project.json,
+# the workflow generates presigned URLs for schema + data and passes
+# them as DB_BACKUP_SCHEMA_URL / DB_BACKUP_DATA_URL. We import both
+# before running migrations so migrate only applies new changes.
+# DB_RESTORED_FROM_BACKUP is exported so the deploy block (and any
+# custom preview-deploy.sh) can skip db:seed.
+if [ -n "$DB_BACKUP_SCHEMA_URL" ] && [ -n "$DB_BACKUP_DATA_URL" ]; then
+    echo "Restoring database from nightly snapshot..."
+    if curl -fsSL "$DB_BACKUP_SCHEMA_URL" | gunzip | \
+            mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE" && \
+       curl -fsSL "$DB_BACKUP_DATA_URL" | gunzip | \
+            mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE"; then
+        echo "Database restored successfully."
+        export DB_RESTORED_FROM_BACKUP=true
+    else
+        echo "WARNING: Snapshot restore failed — migrations + seed will run instead."
+    fi
+fi
+
 # ── Deploy commands ──────────────────────────────────────────
 # If the project provides docker/preview-deploy.sh, it owns all
 # framework-specific commands (caching, migrations, stache warming,
@@ -93,7 +113,9 @@ elif [ -f artisan ]; then
     php artisan route:cache
     php artisan view:cache
     php artisan migrate --force
-    php artisan db:seed --force 2>/dev/null || true
+    if [ "${DB_RESTORED_FROM_BACKUP:-false}" != "true" ]; then
+        php artisan db:seed --force 2>/dev/null || true
+    fi
     chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 fi
 
