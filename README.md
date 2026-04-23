@@ -21,7 +21,7 @@ Visitor (HTTPS) → Cloudflare Edge → Cloudflare Worker → Fargate task (HTTP
 
 #### Triggering
 
-Add the `preview` label to a PR → deploy. Close the PR (with the label) → teardown.
+Add the `preview` label to a PR → deploy. Remove the label or close the PR with the label attached → teardown.
 
 Preview URL format: `https://{branch-slug}--{project-slug}.rnmtest.co.uk`
 
