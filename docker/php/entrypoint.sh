@@ -90,10 +90,11 @@ fi
 # custom preview-deploy.sh) can skip db:seed.
 if [ -n "$DB_BACKUP_SCHEMA_URL" ] && [ -n "$DB_BACKUP_DATA_URL" ]; then
     echo "Restoring database from nightly snapshot..."
+    _charset="${DB_CHARSET:-utf8mb4}"
     if curl -fsSL "$DB_BACKUP_SCHEMA_URL" | gunzip | \
-            mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE" && \
+            mysql --default-character-set="$_charset" -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE" && \
        curl -fsSL "$DB_BACKUP_DATA_URL" | gunzip | \
-            mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE"; then
+            mysql --default-character-set="$_charset" -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" "$DB_DATABASE"; then
         echo "Database restored successfully."
         export DB_RESTORED_FROM_BACKUP=true
     else
