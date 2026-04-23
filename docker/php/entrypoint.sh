@@ -82,7 +82,7 @@ if [ -f docker/preview-post-provision.sh ]; then
 fi
 
 # ── Restore DB from nightly snapshot (if configured) ─────────
-# When a project sets database_setup=backup in .claude/project.json,
+# When a project sets database_setup=backup in .r3/project.json,
 # the workflow generates presigned URLs for schema + data and passes
 # them as DB_BACKUP_SCHEMA_URL / DB_BACKUP_DATA_URL. We import both
 # before running migrations so migrate only applies new changes.

@@ -27,7 +27,7 @@ Preview URL format: `https://{branch-slug}--{project-slug}.rnmtest.co.uk`
 
 #### Per-project setup
 
-Run `/workflow-setup` in Claude Code to create `.claude/project.json`, `.github/workflows/preview.yml`, and the SSH deploy key for a new project.
+Run `/workflow-setup` in Claude Code to create `.r3/project.json`, `.github/workflows/preview.yml`, and the SSH deploy key for a new project.
 
 #### Optional database
 

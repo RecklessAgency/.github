@@ -33,16 +33,16 @@ jobs:
       - name: Read project config
         id: cfg
         run: |
-          echo "php=$(jq -r .php .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "stack=$(jq -r .stack .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "build=$(jq -r '.preview.build // "generic"' .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "assets=$(jq -r '.preview.assets // ""' .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "database_setup=$(jq -r '.preview.database_setup // "seed"' .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "php=$(jq -r .php .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "stack=$(jq -r .stack .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "build=$(jq -r '.preview.build // "generic"' .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "region=$(jq -r .preview.region .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "project_slug=$(jq -r .preview.slug .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "domain=$(jq -r .preview.domain .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "execution_role_arn=$(jq -r .preview.aws.execution_role_arn .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "assets=$(jq -r '.preview.assets // ""' .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "database_setup=$(jq -r '.preview.database_setup // "seed"' .r3/project.json)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

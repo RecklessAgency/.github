@@ -17,10 +17,10 @@ jobs:
       - name: Read project config
         id: cfg
         run: |
-          echo "region=$(jq -r .preview.region .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "project_slug=$(jq -r .preview.slug .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "domain=$(jq -r .preview.domain .claude/project.json)" >> $GITHUB_OUTPUT
-          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .claude/project.json)" >> $GITHUB_OUTPUT
+          echo "region=$(jq -r .preview.region .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "project_slug=$(jq -r .preview.slug .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "domain=$(jq -r .preview.domain .r3/project.json)" >> $GITHUB_OUTPUT
+          echo "aws_role_arn=$(jq -r .preview.aws.role_arn .r3/project.json)" >> $GITHUB_OUTPUT
 
       - name: Derive branch slug
         id: slug
