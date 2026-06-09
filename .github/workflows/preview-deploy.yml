@@ -54,13 +54,14 @@ jobs:
         id: slug
         run: |
           REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          BRANCH_SLUG=$(echo "$REF" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9-]/-/g' \
-            | sed 's/--*/-/g' \
-            | sed 's/^-//' \
-            | sed 's/-$//' \
-            | cut -c1-50)
+          HASH=$(echo -n "$REF" | md5sum | cut -c1-4)
+
+          if [[ "$REF" =~ /([A-Za-z]{2,6}-[0-9]+)([-_]|$) ]]; then
+            TICKET=$(echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
+            BRANCH_SLUG="${TICKET}-${HASH}"
+          else
+            BRANCH_SLUG="${HASH}"
+          fi
 
           PROJECT_SLUG="${{ steps.cfg.outputs.project_slug }}"
           PREVIEW_KEY="${BRANCH_SLUG}--${PROJECT_SLUG}"
@@ -348,6 +349,7 @@ jobs:
         id: ip
         run: |
           TASK_ARN="${{ steps.run.outputs.arn }}"
+          TASK_ID=$(basename "$TASK_ARN")
           echo "Waiting for task to get a public IP..."
           for i in $(seq 1 30); do
             ENI=$(aws ecs describe-tasks \
@@ -369,6 +371,11 @@ jobs:
             fi
 
             echo "  Waiting... (attempt $i/30)"
+            aws logs tail /ecs/preview \
+              --log-stream-name-prefix "ecs/app/${TASK_ID}" \
+              --since 15s \
+              --format short 2>&1 \
+              | sed 's/^/  [container] /' || true
             sleep 10
           done
 
@@ -383,8 +390,6 @@ jobs:
         run: |
           IP="${{ steps.ip.outputs.public_ip }}"
           TASK_ID=$(basename "${{ steps.run.outputs.arn }}")
-          LOG_STREAM="ecs/app/${TASK_ID}"
-          NEXT_TOKEN=""
           echo "Waiting for app to respond at http://$IP/ ..."
           for i in $(seq 1 60); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$IP/" 2>/dev/null || true)
@@ -397,28 +402,11 @@ jobs:
               exit 1
             fi
             echo "  Not ready yet (attempt $i/60, status: ${STATUS:-none})"
-            # Print new container log lines since last check
-            if [ -z "$NEXT_TOKEN" ]; then
-              LOGS=$(aws logs get-log-events \
-                --log-group-name /ecs/preview \
-                --log-stream-name "$LOG_STREAM" \
-                --region "${{ steps.cfg.outputs.region }}" \
-                --limit 20 \
-                --output json 2>/dev/null || true)
-            else
-              LOGS=$(aws logs get-log-events \
-                --log-group-name /ecs/preview \
-                --log-stream-name "$LOG_STREAM" \
-                --region "${{ steps.cfg.outputs.region }}" \
-                --next-token "$NEXT_TOKEN" \
-                --limit 20 \
-                --output json 2>/dev/null || true)
-            fi
-            if [ -n "$LOGS" ]; then
-              echo "$LOGS" | jq -r '.events[].message' 2>/dev/null | sed 's/^/  [container] /' || true
-              NEW_TOKEN=$(echo "$LOGS" | jq -r '.nextForwardToken' 2>/dev/null || true)
-              [ -n "$NEW_TOKEN" ] && NEXT_TOKEN="$NEW_TOKEN"
-            fi
+            aws logs tail /ecs/preview \
+              --log-stream-name-prefix "ecs/app/${TASK_ID}" \
+              --since 15s \
+              --format short 2>&1 \
+              | sed 's/^/  [container] /' || true
             sleep 10
           done
 
