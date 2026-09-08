@@ -6,9 +6,11 @@ name: Preview Deploy
 #
 #   Visitor (HTTP) → DNS A record → Fargate task public IP (port 80)
 #
-# An unproxied Cloudflare DNS A record is created per branch pointing directly
-# to the container's public IP (TTL 60). The record is written here after the
-# container passes a health check, and removed by preview-teardown.yml.
+# A proxied Cloudflare DNS A record is created per branch pointing directly to
+# the container's public IP. The record is written here after the container
+# passes a health check, and removed by preview-teardown.yml. Every record
+# carries the comment "r3-preview key=<preview-key> repo=<org/repo>" so orphaned
+# records can be found and bulk-deleted (r3-bot: /bot previews prune).
 #
 # Container startup: the generic `reckless/php:{version}` ECR image clones the
 # repo at startup using an SSH deploy key (base64-encoded in DEPLOY_KEY env var),
@@ -66,9 +68,15 @@ jobs:
           PROJECT_SLUG="${{ steps.cfg.outputs.project_slug }}"
           PREVIEW_KEY="${BRANCH_SLUG}--${PROJECT_SLUG}"
 
+          # Cloudflare DNS record comment — lets preview records be identified and
+          # bulk-deleted by r3-bot. Free-plan zones cap comments at 100 chars and
+          # have no record tags, so a structured comment is used instead.
+          DNS_COMMENT="r3-preview key=${PREVIEW_KEY} repo=${GITHUB_REPOSITORY}"
+
           echo "branch_slug=$BRANCH_SLUG" >> $GITHUB_OUTPUT
           echo "preview_key=$PREVIEW_KEY" >> $GITHUB_OUTPUT
           echo "task_family=preview-${PREVIEW_KEY}" >> $GITHUB_OUTPUT
+          echo "dns_comment=${DNS_COMMENT:0:100}" >> $GITHUB_OUTPUT
 
       # ── Build image (dockerfile projects only) ───────────────
       - name: Log in to ECR
@@ -163,6 +171,7 @@ jobs:
           CF_ZONE_ID: ebad49274edc8f01b668fffbf8ae15d5
         run: |
           HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
+          DNS_COMMENT="${{ steps.slug.outputs.dns_comment }}"
 
           # Check if DNS record already exists
           EXISTING=$(curl -s \
@@ -196,7 +205,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true}" \
+            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true,\"comment\":\"${DNS_COMMENT}\"}" \
             | jq -r 'if .success then "DNS record created: \(.result.name) → \(.result.content)" else "ERROR: \(.errors)" end'
 
       # ── Build assets (s3-cached mode) ────────────────────────
@@ -418,6 +427,7 @@ jobs:
           CF_ZONE_ID: ebad49274edc8f01b668fffbf8ae15d5
         run: |
           HOSTNAME="${{ steps.slug.outputs.preview_key }}.${{ steps.cfg.outputs.domain }}"
+          DNS_COMMENT="${{ steps.slug.outputs.dns_comment }}"
           PUBLIC_IP="${{ steps.ip.outputs.public_ip }}"
 
           # Delete any existing record with this name (idempotent re-deploy)
@@ -438,7 +448,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true}" \
+            --data "{\"type\":\"A\",\"name\":\"${HOSTNAME}\",\"content\":\"${PUBLIC_IP}\",\"ttl\":1,\"proxied\":true,\"comment\":\"${DNS_COMMENT}\"}" \
             | jq -r 'if .success then "DNS record created: \(.result.name) → \(.result.content)" else "ERROR: \(.errors)" end'
 
       # ── Post PR comment ───────────────────────────────────────

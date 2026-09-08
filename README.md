@@ -15,6 +15,7 @@ Visitor (HTTPS) → Cloudflare Edge → Cloudflare Worker → Fargate task (HTTP
 
 - **Hosting**: AWS ECS Fargate `run-task` in a public subnet. No ALB — each task gets a public IP directly.
 - **Routing**: A Cloudflare A record is created on deploy and removed on teardown, using a `{branch-slug}--{project-slug}` subdomain.
+- **DNS record identification**: Every preview A record carries the Cloudflare comment `r3-preview key={preview-key} repo={org/repo}` (the zone is on the Free plan, so tags are unavailable). Filter in the dashboard or API with `comment.startswith=r3-preview`. Records left behind when a task dies outside teardown can be listed and deleted with r3-bot's `/bot previews orphans` and `/bot previews prune`.
 - **TLS**: Cloudflare terminates HTTPS for visitors. The CF→container leg is plain HTTP over the public internet. Acceptable for preview environments (ephemeral, non-production data). For sensitive data, consider Cloudflare Tunnel with private subnets instead (requires a NAT gateway).
 - **Container image**: The generic `reckless/php:{version}` ECR image is shared across all projects. At startup, the container clones the project repo using an SSH deploy key (passed base64-encoded as `DEPLOY_KEY`), runs `composer install` + `npm build`, migrates, and serves via `php artisan serve`.
 - **Deploy key**: An ed25519 key committed to each project repo at `docker/preview-deploy-key`. GitHub Actions reads and base64-encodes it into the Fargate task environment. Read-only, no expiry.
